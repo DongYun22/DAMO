@@ -1,0 +1,614 @@
+import {
+  ArrowLeft,
+  Check,
+  ChevronRight,
+  CircleUserRound,
+  Home,
+  Map,
+  MapPin,
+  Plus,
+  Search,
+  Sparkles,
+  UsersRound,
+  X
+} from "lucide-react";
+import {
+  type ButtonHTMLAttributes,
+  type PropsWithChildren,
+  useEffect,
+  useId,
+  useRef
+} from "react";
+import { Link, NavLink, useNavigate } from "react-router-dom";
+import type {
+  Candidate,
+  MeetingSummary,
+  Mood,
+  Place,
+  Purpose,
+  UserPlace
+} from "@damo/contracts";
+import {
+  MOOD_LABELS,
+  PURPOSE_LABELS,
+  STATUS_LABELS
+} from "@damo/contracts";
+
+export const formatMeetingAt = (value: string) =>
+  new Intl.DateTimeFormat("ko-KR", {
+    month: "long",
+    day: "numeric",
+    weekday: "short",
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true
+  }).format(new Date(value));
+
+export function Logo({ compact = false }: { compact?: boolean }) {
+  return (
+    <Link to="/" className={`logo ${compact ? "logo--compact" : ""}`} aria-label="DAMO 홈">
+      <span className="logo__mark" aria-hidden="true">
+        <span />
+        <span />
+      </span>
+      <span className="logo__word">DAMO</span>
+    </Link>
+  );
+}
+
+export function ScreenHeader({
+  title,
+  description,
+  back = true,
+  action
+}: {
+  title: string;
+  description?: string;
+  back?: boolean;
+  action?: React.ReactNode;
+}) {
+  const navigate = useNavigate();
+  return (
+    <header className="screen-header">
+      <div className="screen-header__row">
+        {back ? (
+          <button
+            className="icon-button"
+            type="button"
+            onClick={() => navigate(-1)}
+            aria-label="뒤로 가기"
+          >
+            <ArrowLeft size={22} strokeWidth={2.25} />
+          </button>
+        ) : (
+          <Logo compact />
+        )}
+        <div className="screen-header__copy">
+          <h1>{title}</h1>
+          {description ? <p>{description}</p> : null}
+        </div>
+        <div className="screen-header__action">{action}</div>
+      </div>
+    </header>
+  );
+}
+
+export function BottomNav({ hasVoteAlert }: { hasVoteAlert: boolean }) {
+  return (
+    <nav className="bottom-nav" aria-label="주요 메뉴">
+      <NavLink to="/" end>
+        <span className="bottom-nav__icon">
+          <Home size={23} />
+          {hasVoteAlert ? <i className="notification-dot" aria-label="새 투표 있음" /> : null}
+        </span>
+        <span>홈</span>
+      </NavLink>
+      <NavLink to="/map">
+        <Map size={23} />
+        <span>지도</span>
+      </NavLink>
+      <NavLink to="/places">
+        <MapPin size={23} />
+        <span>내 장소</span>
+      </NavLink>
+    </nav>
+  );
+}
+
+export function Loading({ label = "불러오는 중" }: { label?: string }) {
+  return (
+    <div className="loading" role="status">
+      <span className="loading__spinner" />
+      <span>{label}</span>
+    </div>
+  );
+}
+
+export function EmptyState({
+  title,
+  description,
+  action
+}: {
+  title: string;
+  description: string;
+  action?: React.ReactNode;
+}) {
+  return (
+    <div className="empty-state">
+      <span className="empty-state__icon">
+        <MapPin size={24} />
+      </span>
+      <strong>{title}</strong>
+      <p>{description}</p>
+      {action}
+    </div>
+  );
+}
+
+export function Modal({
+  open,
+  title,
+  description,
+  children,
+  onClose
+}: PropsWithChildren<{
+  open: boolean;
+  title: string;
+  description?: string;
+  onClose: () => void;
+}>) {
+  const titleId = useId();
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose, open]);
+  if (!open) return null;
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
+      <section
+        className="modal-sheet"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <div className="modal-sheet__grab" />
+        <button className="modal-sheet__close" type="button" onClick={onClose} aria-label="닫기">
+          <X size={20} />
+        </button>
+        <h2 id={titleId}>{title}</h2>
+        {description ? <p className="modal-sheet__description">{description}</p> : null}
+        {children}
+      </section>
+    </div>
+  );
+}
+
+export function Toast({
+  message,
+  onDone
+}: {
+  message: string;
+  onDone: () => void;
+}) {
+  useEffect(() => {
+    const timer = window.setTimeout(onDone, 2600);
+    return () => window.clearTimeout(timer);
+  }, [onDone]);
+  return (
+    <div className="toast" role="status">
+      <Check size={18} />
+      {message}
+    </div>
+  );
+}
+
+export function ChipGroup<T extends string>({
+  label,
+  values,
+  labels,
+  value,
+  onChange
+}: {
+  label: string;
+  values: readonly T[];
+  labels: Record<T, string>;
+  value: T;
+  onChange: (value: T) => void;
+}) {
+  return (
+    <fieldset className="chip-field">
+      <legend>{label}</legend>
+      <div className="chip-group">
+        {values.map((item) => (
+          <button
+            key={item}
+            type="button"
+            className={value === item ? "is-selected" : ""}
+            aria-pressed={value === item}
+            onClick={() => onChange(item)}
+          >
+            {labels[item]}
+          </button>
+        ))}
+      </div>
+    </fieldset>
+  );
+}
+
+export function PurposeMoodFields({
+  purpose,
+  mood,
+  onPurpose,
+  onMood
+}: {
+  purpose: Purpose;
+  mood: Mood;
+  onPurpose: (value: Purpose) => void;
+  onMood: (value: Mood) => void;
+}) {
+  return (
+    <>
+      <ChipGroup
+        label="목적"
+        values={["STUDY", "CAFE", "MEAL", "DRINK"] as const}
+        labels={PURPOSE_LABELS}
+        value={purpose}
+        onChange={onPurpose}
+      />
+      <ChipGroup
+        label="성격"
+        values={["FUN", "QUIET", "BUSINESS", "TIPSY"] as const}
+        labels={MOOD_LABELS}
+        value={mood}
+        onChange={onMood}
+      />
+    </>
+  );
+}
+
+export function PrimaryButton({
+  children,
+  className = "",
+  ...props
+}: ButtonHTMLAttributes<HTMLButtonElement>) {
+  return (
+    <button className={`button button--primary ${className}`} {...props}>
+      {children}
+    </button>
+  );
+}
+
+export function SecondaryButton({
+  children,
+  className = "",
+  ...props
+}: ButtonHTMLAttributes<HTMLButtonElement>) {
+  return (
+    <button className={`button button--secondary ${className}`} {...props}>
+      {children}
+    </button>
+  );
+}
+
+export function PlaceThumbnail({ place, large = false }: { place: Place; large?: boolean }) {
+  return (
+    <span className={`place-thumbnail ${large ? "place-thumbnail--large" : ""}`}>
+      {place.imageUrl ? <img src={place.imageUrl} alt="" /> : <MapPin size={22} />}
+    </span>
+  );
+}
+
+export function PlaceMeta({ place }: { place: Place }) {
+  return (
+    <div className="place-meta">
+      <strong>{place.name}</strong>
+      <span>{place.category}</span>
+      <small>
+        {place.station} · {place.distanceText}
+      </small>
+    </div>
+  );
+}
+
+export function CandidateRow({
+  candidate,
+  selected,
+  onClick,
+  showVotes
+}: {
+  candidate: Candidate;
+  selected?: boolean;
+  onClick?: () => void;
+  showVotes?: number;
+}) {
+  const content = (
+    <>
+      <PlaceThumbnail place={candidate.place} />
+      <PlaceMeta place={candidate.place} />
+      <div className="candidate-row__side">
+        {showVotes !== undefined ? <strong>{showVotes}표</strong> : null}
+        <span>추천 {candidate.recommendationCount}명</span>
+        {selected ? <Check size={18} /> : onClick ? <ChevronRight size={18} /> : null}
+      </div>
+    </>
+  );
+  return onClick ? (
+    <button
+      type="button"
+      className={`candidate-row ${selected ? "is-selected" : ""}`}
+      onClick={onClick}
+    >
+      {content}
+    </button>
+  ) : (
+    <div className="candidate-row">{content}</div>
+  );
+}
+
+export function UserPlaceRow({
+  item,
+  selected,
+  onClick
+}: {
+  item: UserPlace;
+  selected?: boolean;
+  onClick?: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      className={`candidate-row ${selected ? "is-selected" : ""}`}
+      onClick={onClick}
+    >
+      <PlaceThumbnail place={item.place} />
+      <div className="place-meta">
+        <strong>{item.place.name}</strong>
+        <span>
+          {PURPOSE_LABELS[item.purpose]} · {MOOD_LABELS[item.mood]}
+        </span>
+        <small>{item.place.roadAddress}</small>
+      </div>
+      <div className="candidate-row__side">
+        {selected ? <Check size={18} /> : <ChevronRight size={18} />}
+      </div>
+    </button>
+  );
+}
+
+export function MeetingCard({ meeting }: { meeting: MeetingSummary }) {
+  const target =
+    meeting.status === "VOTING"
+      ? meeting.myVoteCompleted
+        ? `/meetings/${meeting.id}/results`
+        : `/meetings/${meeting.id}/vote`
+      : meeting.status === "FINAL_SELECTION" || meeting.status === "COMPLETED"
+        ? `/meetings/${meeting.id}/results`
+        : `/meetings/${meeting.id}`;
+  return (
+    <Link
+      to={target}
+      className={`meeting-card meeting-card--${meeting.status.toLowerCase()} ${
+        meeting.voteAlert ? "meeting-card--alert" : ""
+      }`}
+    >
+      <div className="meeting-card__top">
+        <div>
+          <span className="eyebrow">
+            {meeting.role === "HOST" ? "내가 만든 모임" : "참여 중인 모임"}
+          </span>
+          <h3>{meeting.name}</h3>
+        </div>
+        <ChevronRight size={20} />
+      </div>
+      <div className="meeting-card__tags">
+        <span>{PURPOSE_LABELS[meeting.purpose]}</span>
+        <span>{MOOD_LABELS[meeting.mood]}</span>
+        <span className={meeting.status === "VOTING" ? "tag--pink" : ""}>
+          {STATUS_LABELS[meeting.status]}
+        </span>
+      </div>
+      <p className="meeting-card__date">{formatMeetingAt(meeting.meetingAt)}</p>
+      <div className="meeting-card__bottom">
+        <span>
+          <UsersRound size={16} />
+          {meeting.currentMembers}/{meeting.capacity}명
+        </span>
+        {meeting.finalPlace ? (
+          <strong>
+            <MapPin size={16} />
+            {meeting.finalPlace.name}
+          </strong>
+        ) : (
+          <strong>{meeting.role === "HOST" ? "모임장" : "모임원"}</strong>
+        )}
+      </div>
+    </Link>
+  );
+}
+
+type NaverWindow = Window & {
+  naver?: {
+    maps: {
+      Map: new (element: HTMLElement, options: Record<string, unknown>) => unknown;
+      LatLng: new (lat: number, lng: number) => unknown;
+      Marker: new (options: Record<string, unknown>) => unknown;
+      Event: { addListener: (target: unknown, event: string, callback: () => void) => void };
+    };
+  };
+};
+
+export function MapCanvas({
+  places,
+  selectedId,
+  onSelect,
+  compact = false
+}: {
+  places: Place[];
+  selectedId?: string;
+  onSelect?: (place: Place) => void;
+  compact?: boolean;
+}) {
+  const mapRef = useRef<HTMLDivElement>(null);
+  const clientId = import.meta.env.VITE_NAVER_MAP_CLIENT_ID as string | undefined;
+
+  useEffect(() => {
+    if (!clientId || !mapRef.current || places.length === 0) return;
+    let cancelled = false;
+    const renderMap = () => {
+      if (cancelled || !mapRef.current) return;
+      const naver = (window as NaverWindow).naver;
+      if (!naver) return;
+      const center = places[0]!;
+      const map = new naver.maps.Map(mapRef.current, {
+        center: new naver.maps.LatLng(center.latitude, center.longitude),
+        zoom: 14
+      });
+      for (const place of places) {
+        const marker = new naver.maps.Marker({
+          map,
+          position: new naver.maps.LatLng(place.latitude, place.longitude),
+          title: place.name
+        });
+        naver.maps.Event.addListener(marker, "click", () => onSelect?.(place));
+      }
+    };
+    const existing = document.querySelector<HTMLScriptElement>(
+      "script[data-damo-naver-map]"
+    );
+    if (existing) {
+      if ((window as NaverWindow).naver) renderMap();
+      else existing.addEventListener("load", renderMap, { once: true });
+      return () => {
+        cancelled = true;
+      };
+    }
+    const script = document.createElement("script");
+    script.dataset.damoNaverMap = "true";
+    script.src = `https://oapi.map.naver.com/openapi/v3/maps.js?ncpKeyId=${clientId}`;
+    script.async = true;
+    script.addEventListener("load", renderMap, { once: true });
+    document.head.append(script);
+    return () => {
+      cancelled = true;
+    };
+  }, [clientId, onSelect, places]);
+
+  if (clientId) {
+    return <div className={`map-canvas ${compact ? "map-canvas--compact" : ""}`} ref={mapRef} />;
+  }
+
+  const lats = places.map((place) => place.latitude);
+  const lngs = places.map((place) => place.longitude);
+  const minLat = Math.min(...lats, 37.54);
+  const maxLat = Math.max(...lats, 37.56);
+  const minLng = Math.min(...lngs, 127.04);
+  const maxLng = Math.max(...lngs, 127.07);
+  return (
+    <div className={`map-canvas map-canvas--mock ${compact ? "map-canvas--compact" : ""}`}>
+      <span className="map-canvas__road map-canvas__road--a" />
+      <span className="map-canvas__road map-canvas__road--b" />
+      <span className="map-canvas__road map-canvas__road--c" />
+      <span className="map-canvas__station">
+        <span />
+        성수역
+      </span>
+      <span className="map-canvas__mode">목 지도</span>
+      {places.map((place, index) => {
+        const left =
+          12 + ((place.longitude - minLng) / Math.max(maxLng - minLng, 0.001)) * 72;
+        const top =
+          15 + (1 - (place.latitude - minLat) / Math.max(maxLat - minLat, 0.001)) * 66;
+        return (
+          <button
+            key={place.id}
+            type="button"
+            className={`map-pin ${selectedId === place.id ? "is-selected" : ""}`}
+            style={{ left: `${left}%`, top: `${top}%` }}
+            onClick={() => onSelect?.(place)}
+            aria-label={`${place.name} 선택`}
+          >
+            <MapPin size={selectedId === place.id ? 24 : 20} fill="currentColor" />
+            {!compact && selectedId === place.id ? <span>{place.name}</span> : null}
+            {!compact && !selectedId && index === 0 ? <span>{place.name}</span> : null}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+export function SearchInput({
+  value,
+  onChange,
+  onSubmit,
+  placeholder = "역 이름 또는 장소 검색"
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  onSubmit: () => void;
+  placeholder?: string;
+}) {
+  return (
+    <form
+      className="search-input"
+      onSubmit={(event) => {
+        event.preventDefault();
+        onSubmit();
+      }}
+    >
+      <Search size={20} />
+      <input
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        placeholder={placeholder}
+        aria-label={placeholder}
+      />
+      <button type="submit">검색</button>
+    </form>
+  );
+}
+
+export function SummaryBanner({
+  title,
+  description,
+  alert = false
+}: {
+  title: string;
+  description: string;
+  alert?: boolean;
+}) {
+  return (
+    <div className={`summary-banner${alert ? " summary-banner--alert" : ""}`}>
+      <span>
+        <Sparkles size={20} />
+      </span>
+      <div>
+        <strong>{title}</strong>
+        <p>{description}</p>
+      </div>
+    </div>
+  );
+}
+
+export function ProfileButton({ nickname }: { nickname: string }) {
+  return (
+    <span className="profile-button" aria-label={`${nickname} 계정`}>
+      <CircleUserRound size={22} />
+      <span>{nickname}</span>
+    </span>
+  );
+}
+
+export function FloatingCreateButton({ to, label }: { to: string; label: string }) {
+  return (
+    <Link to={to} className="floating-mini-button">
+      <Plus size={18} />
+      {label}
+    </Link>
+  );
+}

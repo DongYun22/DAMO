@@ -1,0 +1,1973 @@
+openapi: 3.1.0
+
+info:
+  title: DAMO API
+  version: 1.0.0
+  summary: DAMO 모바일 웹 MVP API
+  license:
+    name: UNLICENSED
+    identifier: LicenseRef-Proprietary
+  description: |
+    DAMO의 인증, 내 장소, 모임, 후보 장소, A/B 투표와 결과 집계를 위한 API 명세입니다.
+
+    - 화면 흐름: `flow.md`
+    - 데이터 구조: `data-model.md`
+    - 사람이 읽는 API 명세: `api.md`
+    - 인증은 HttpOnly 쿠키를 사용합니다.
+    - 홈과 투표 결과는 MVP에서 5초 간격으로 조회합니다.
+
+servers:
+  - url: https://damo.com/api/v1
+    description: 운영 환경
+  - url: https://dev.damo.com/api/v1
+    description: 개발 환경
+
+tags:
+  - name: Auth
+    description: 테스트 로그인과 OAuth 인증
+  - name: User
+    description: 현재 사용자 정보
+  - name: Home
+    description: 홈 화면 데이터
+  - name: Map
+    description: 네이버 지도 장소 검색
+  - name: MyPlaces
+    description: 내 장소 관리
+  - name: Meetings
+    description: 모임 생성과 참여자 관리
+  - name: Candidates
+    description: 후보 장소 관리
+  - name: Vote
+    description: A/B 투표와 결과
+
+security:
+  - cookieAuth: []
+
+paths:
+  /auth/test/signup:
+    post:
+      tags: [Auth]
+      operationId: signUpTestAccount
+      summary: 테스트 계정 즉시 가입
+      description: 배포 이전 테스트 환경에서만 활성화합니다.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TestSignUpRequest"
+      responses:
+        "201":
+          description: 가입 및 로그인 성공
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthSuccessResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+  /auth/test/login:
+    post:
+      tags: [Auth]
+      operationId: loginTestAccount
+      summary: 테스트 계정 로그인
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TestLoginRequest"
+      responses:
+        "200":
+          description: 로그인 성공
+          headers:
+            Set-Cookie:
+              description: Access Token과 Refresh Token 쿠키
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthSuccessResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /auth/oauth/{provider}:
+    get:
+      tags: [Auth]
+      operationId: startOAuthLogin
+      summary: OAuth 로그인 시작
+      description: 선택한 제공자의 인증 화면으로 리다이렉트합니다.
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/OAuthProvider"
+      responses:
+        "302":
+          description: OAuth 제공자 인증 화면으로 이동
+          headers:
+            Location:
+              schema:
+                type: string
+                format: uri
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+  /auth/oauth/{provider}/callback:
+    get:
+      tags: [Auth]
+      operationId: handleOAuthCallback
+      summary: OAuth 콜백 처리
+      description: |
+        프론트엔드가 직접 호출하지 않습니다.
+        로그인 성공 후 인증 쿠키를 발급하고 DAMO 홈 `/`으로 리다이렉트합니다.
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/OAuthProvider"
+        - name: code
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: state
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: error
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        "302":
+          description: DAMO 홈 또는 로그인 오류 화면으로 이동
+          headers:
+            Location:
+              schema:
+                type: string
+                format: uri-reference
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+  /auth/refresh:
+    post:
+      tags: [Auth]
+      operationId: refreshSession
+      summary: 로그인 세션 갱신
+      security:
+        - refreshCookie: []
+      responses:
+        "204":
+          description: Access Token 쿠키 재발급
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /auth/logout:
+    post:
+      tags: [Auth]
+      operationId: logout
+      summary: 로그아웃
+      responses:
+        "204":
+          description: 인증 쿠키 제거 완료
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /me:
+    get:
+      tags: [User]
+      operationId: getMe
+      summary: 내 계정 정보 조회
+      responses:
+        "200":
+          description: 현재 사용자
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /me/home:
+    get:
+      tags: [Home]
+      operationId: getHome
+      summary: 홈 화면 데이터 조회
+      description: 진행 중인 모임과 완료된 모임을 분리해서 반환합니다.
+      responses:
+        "200":
+          description: 홈 데이터
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HomeResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /map/places/search:
+    get:
+      tags: [Map]
+      operationId: searchMapPlaces
+      summary: 역 또는 장소 검색
+      parameters:
+        - name: query
+          in: query
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 100
+        - name: latitude
+          in: query
+          required: false
+          schema:
+            type: number
+            format: double
+            minimum: -90
+            maximum: 90
+        - name: longitude
+          in: query
+          required: false
+          schema:
+            type: number
+            format: double
+            minimum: -180
+            maximum: 180
+      responses:
+        "200":
+          description: 장소 검색 결과
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MapPlaceSearchResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+  /map/places/{naverPlaceId}:
+    get:
+      tags: [Map]
+      operationId: getMapPlace
+      summary: 장소 상세 조회
+      parameters:
+        - $ref: "#/components/parameters/NaverPlaceId"
+      responses:
+        "200":
+          description: 장소 상세
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MapPlaceResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /me/places:
+    get:
+      tags: [MyPlaces]
+      operationId: listMyPlaces
+      summary: 내 장소 목록 조회
+      parameters:
+        - $ref: "#/components/parameters/PurposeQuery"
+        - $ref: "#/components/parameters/MoodQuery"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: 내 장소 목록
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MyPlaceListResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      tags: [MyPlaces]
+      operationId: createMyPlace
+      summary: 내 장소 등록
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateMyPlaceRequest"
+      responses:
+        "201":
+          description: 내 장소 등록 성공
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MyPlaceResponse"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+  /me/places/{userPlaceId}:
+    patch:
+      tags: [MyPlaces]
+      operationId: updateMyPlace
+      summary: 내 장소 분류 변경
+      description: "`applyToMeetingIds`에 지정한 모집 중 모임 후보에도 변경사항을 반영합니다."
+      parameters:
+        - $ref: "#/components/parameters/UserPlaceId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateMyPlaceRequest"
+      responses:
+        "200":
+          description: 내 장소와 후보 반영 결과
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MyPlaceMutationResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+  /me/places/{userPlaceId}/unregister:
+    post:
+      tags: [MyPlaces]
+      operationId: unregisterMyPlace
+      summary: 내 장소 등록 해제
+      description: "`removeFromMeetingIds`가 비어 있으면 내 장소에서만 등록 해제합니다."
+      parameters:
+        - $ref: "#/components/parameters/UserPlaceId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UnregisterMyPlaceRequest"
+      responses:
+        "200":
+          description: 등록 해제 및 후보 취소 결과
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UnregisterMyPlaceResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /meetings:
+    post:
+      tags: [Meetings]
+      operationId: createMeeting
+      summary: 모임 생성
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateMeetingRequest"
+      responses:
+        "201":
+          description: 모임 생성 성공
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeetingCreatedResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+  /meetings/lookup:
+    post:
+      tags: [Meetings]
+      operationId: lookupMeeting
+      summary: 4자리 코드로 가입할 모임 확인
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MeetingLookupRequest"
+      responses:
+        "200":
+          description: 가입 가능 모임
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeetingLookupResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /meetings/{meetingId}:
+    get:
+      tags: [Meetings]
+      operationId: getMeeting
+      summary: 모임 상세 조회
+      parameters:
+        - $ref: "#/components/parameters/MeetingId"
+      responses:
+        "200":
+          description: 모임 상세
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeetingDetailResponse"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      tags: [Meetings]
+      operationId: deleteMeeting
+      summary: 모임 삭제
+      description: 모임장만 모든 모임 상태에서 요청할 수 있습니다.
+      parameters:
+        - $ref: "#/components/parameters/MeetingId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "204":
+          description: 모임 삭제 완료
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /meetings/{meetingId}/join:
+    post:
+      tags: [Meetings]
+      operationId: joinMeeting
+      summary: 모임 가입 또는 재가입
+      description: 탈퇴하거나 내보내진 사용자도 모집 중이고 정원에 여유가 있으면 재가입할 수 있습니다.
+      parameters:
+        - $ref: "#/components/parameters/MeetingId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/JoinMeetingRequest"
+      responses:
+        "200":
+          description: 가입 또는 재가입 성공
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JoinMeetingResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+  /meetings/{meetingId}/leave:
+    post:
+      tags: [Meetings]
+      operationId: leaveMeeting
+      summary: 모임 탈퇴
+      description: 모임원만 투표 생성 전에 탈퇴할 수 있습니다.
+      parameters:
+        - $ref: "#/components/parameters/MeetingId"
+      responses:
+        "204":
+          description: 탈퇴와 후보 추천 제거 완료
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /meetings/{meetingId}/members/{memberId}/kick:
+    post:
+      tags: [Meetings]
+      operationId: kickMeetingMember
+      summary: 모임원 내보내기
+      description: 모임장만 투표 생성 전에 요청할 수 있습니다.
+      parameters:
+        - $ref: "#/components/parameters/MeetingId"
+        - $ref: "#/components/parameters/MemberId"
+      responses:
+        "200":
+          description: 내보내기와 후보 추천 제거 완료
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KickMemberResponse"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /meetings/{meetingId}/eligible-places:
+    get:
+      tags: [Candidates]
+      operationId: listEligiblePlaces
+      summary: 후보로 선택 가능한 내 장소 조회
+      parameters:
+        - $ref: "#/components/parameters/MeetingId"
+      responses:
+        "200":
+          description: 선택 가능한 내 장소
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EligiblePlaceListResponse"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /meetings/{meetingId}/candidates:
+    get:
+      tags: [Candidates]
+      operationId: listMeetingCandidates
+      summary: 통합 후보 목록 조회
+      parameters:
+        - $ref: "#/components/parameters/MeetingId"
+      responses:
+        "200":
+          description: 통합 후보 목록
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CandidateListResponse"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /meetings/{meetingId}/candidates/me:
+    put:
+      tags: [Candidates]
+      operationId: replaceMyCandidates
+      summary: 내 후보 전체 교체
+      description: 빈 배열부터 최대 2개까지 지정할 수 있습니다.
+      parameters:
+        - $ref: "#/components/parameters/MeetingId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReplaceMyCandidatesRequest"
+      responses:
+        "200":
+          description: 후보 교체 결과
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CandidateListResponse"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+  /meetings/{meetingId}/vote:
+    post:
+      tags: [Vote]
+      operationId: createVote
+      summary: 투표 생성
+      description: 모임장만 후보가 2개 이상인 모집 중 모임에서 요청할 수 있습니다.
+      parameters:
+        - $ref: "#/components/parameters/MeetingId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "201":
+          description: 후보 고정과 개인 투표 세션 생성 완료
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VoteCreatedResponse"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+  /meetings/{meetingId}/vote/session:
+    get:
+      tags: [Vote]
+      operationId: getMyVoteSession
+      summary: 내 현재 A/B 라운드 조회
+      description: 재접속 시 마지막으로 저장한 라운드 다음부터 반환합니다.
+      parameters:
+        - $ref: "#/components/parameters/MeetingId"
+      responses:
+        "200":
+          description: 개인 투표 상태와 현재 라운드
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VoteSessionResponse"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /meetings/{meetingId}/vote/choices:
+    post:
+      tags: [Vote]
+      operationId: submitVoteChoice
+      summary: A/B 선택 저장
+      parameters:
+        - $ref: "#/components/parameters/MeetingId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SubmitVoteChoiceRequest"
+      responses:
+        "200":
+          description: 선택 저장과 다음 라운드
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SubmitVoteChoiceResponse"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+  /meetings/{meetingId}/vote/results:
+    get:
+      tags: [Vote]
+      operationId: getVoteResults
+      summary: 실시간 결과 조회
+      description: 결과 화면이 보이는 동안 5초마다 호출합니다.
+      parameters:
+        - $ref: "#/components/parameters/MeetingId"
+      responses:
+        "200":
+          description: 현재 순위와 참여 현황
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VoteResultsResponse"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /meetings/{meetingId}/vote/close:
+    post:
+      tags: [Vote]
+      operationId: closeVote
+      summary: 모임장 수동 투표 종료
+      parameters:
+        - $ref: "#/components/parameters/MeetingId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CloseVoteRequest"
+      responses:
+        "200":
+          description: 투표 종료와 단독 1위 또는 공동 1위 결과
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CloseVoteResponse"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          description: 미완료 인원 존재 또는 이미 종료됨
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /meetings/{meetingId}/vote/final-selection:
+    post:
+      tags: [Vote]
+      operationId: selectFinalCandidate
+      summary: 공동 1위 최종 장소 선택
+      parameters:
+        - $ref: "#/components/parameters/MeetingId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FinalSelectionRequest"
+      responses:
+        "200":
+          description: 최종 장소 확정
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FinalSelectionResponse"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+components:
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: damo_access
+      description: HttpOnly Access Token 쿠키
+    refreshCookie:
+      type: apiKey
+      in: cookie
+      name: damo_refresh
+      description: HttpOnly Refresh Token 쿠키
+
+  parameters:
+    OAuthProvider:
+      name: provider
+      in: path
+      required: true
+      schema:
+        type: string
+        enum: [kakao, naver, google]
+    MeetingId:
+      name: meetingId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    MemberId:
+      name: memberId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    UserPlaceId:
+      name: userPlaceId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    NaverPlaceId:
+      name: naverPlaceId
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 100
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: 네트워크 재시도 시 같은 작업을 한 번만 반영하기 위한 UUID
+      schema:
+        type: string
+        format: uuid
+    PurposeQuery:
+      name: purpose
+      in: query
+      required: false
+      schema:
+        $ref: "#/components/schemas/Purpose"
+    MoodQuery:
+      name: mood
+      in: query
+      required: false
+      schema:
+        $ref: "#/components/schemas/Mood"
+    Limit:
+      name: limit
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      schema:
+        type: string
+
+  responses:
+    BadRequest:
+      description: 요청 형식 또는 입력값 오류
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Unauthorized:
+      description: 로그인이 필요하거나 세션이 만료됨
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Forbidden:
+      description: 요청 권한 없음
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    NotFound:
+      description: 데이터가 없거나 삭제됨
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Conflict:
+      description: 현재 데이터 상태와 요청이 충돌함
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    UnprocessableEntity:
+      description: 요청 형식은 맞지만 서비스 운영 규칙을 위반함
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+  schemas:
+    Purpose:
+      type: string
+      enum: [STUDY, CAFE, MEAL, DRINK]
+    Mood:
+      type: string
+      enum: [FUN, QUIET, BUSINESS, TIPSY]
+    AuthProvider:
+      type: string
+      enum: [TEST, KAKAO, NAVER, GOOGLE]
+    MeetingStatus:
+      type: string
+      enum: [RECRUITING, VOTING, FINAL_SELECTION, COMPLETED, DELETED]
+    MemberRole:
+      type: string
+      enum: [HOST, MEMBER]
+    MemberStatus:
+      type: string
+      enum: [ACTIVE, LEFT, KICKED]
+    VoteStatus:
+      type: string
+      enum: [OPEN, FINAL_SELECTION, CLOSED]
+    VoteSessionStatus:
+      type: string
+      enum: [NOT_STARTED, IN_PROGRESS, COMPLETED]
+
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message, requestId]
+          properties:
+            code:
+              type: string
+              examples: [MEETING_FULL]
+            message:
+              type: string
+              examples: [정원이 모두 찼습니다.]
+            details:
+              type: object
+              additionalProperties: true
+            requestId:
+              type: string
+
+    User:
+      type: object
+      required: [id, provider, nickname]
+      properties:
+        id:
+          type: string
+          format: uuid
+        provider:
+          $ref: "#/components/schemas/AuthProvider"
+        nickname:
+          type: string
+          minLength: 1
+          maxLength: 20
+        email:
+          type:
+            - string
+            - "null"
+          format: email
+
+    UserResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          $ref: "#/components/schemas/User"
+
+    TestSignUpRequest:
+      type: object
+      additionalProperties: false
+      required: [loginId, nickname, password]
+      properties:
+        loginId:
+          type: string
+          minLength: 4
+          maxLength: 50
+        nickname:
+          type: string
+          minLength: 1
+          maxLength: 20
+        password:
+          type: string
+          format: password
+          minLength: 8
+          maxLength: 72
+
+    TestLoginRequest:
+      type: object
+      additionalProperties: false
+      required: [loginId, password]
+      properties:
+        loginId:
+          type: string
+          minLength: 4
+          maxLength: 50
+        password:
+          type: string
+          format: password
+          minLength: 8
+          maxLength: 72
+
+    AuthSuccessResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [redirectTo]
+          properties:
+            user:
+              $ref: "#/components/schemas/User"
+            redirectTo:
+              type: string
+              const: /
+
+    PlaceSummary:
+      type: object
+      required: [naverPlaceId, name, latitude, longitude, isSaved]
+      properties:
+        naverPlaceId:
+          type: string
+        name:
+          type: string
+        category:
+          type:
+            - string
+            - "null"
+        roadAddress:
+          type:
+            - string
+            - "null"
+        jibunAddress:
+          type:
+            - string
+            - "null"
+        latitude:
+          type: number
+          format: double
+        longitude:
+          type: number
+          format: double
+        naverPlaceUrl:
+          type:
+            - string
+            - "null"
+          format: uri
+        isSaved:
+          type: boolean
+        userPlaceId:
+          type:
+            - string
+            - "null"
+          format: uuid
+
+    MapPlaceSearchResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: "#/components/schemas/PlaceSummary"
+
+    MapPlaceResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          $ref: "#/components/schemas/PlaceSummary"
+
+    MeetingReference:
+      type: object
+      required: [meetingId, meetingName]
+      properties:
+        meetingId:
+          type: string
+          format: uuid
+        meetingName:
+          type: string
+          maxLength: 20
+
+    MyPlace:
+      type: object
+      required: [id, place, purpose, mood, usedByRecruitingMeetings]
+      properties:
+        id:
+          type: string
+          format: uuid
+        place:
+          $ref: "#/components/schemas/PlaceSummary"
+        purpose:
+          $ref: "#/components/schemas/Purpose"
+        mood:
+          $ref: "#/components/schemas/Mood"
+        usedByRecruitingMeetings:
+          type: array
+          items:
+            $ref: "#/components/schemas/MeetingReference"
+
+    MyPlaceResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          $ref: "#/components/schemas/MyPlace"
+
+    MyPlaceListResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [items, nextCursor]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: "#/components/schemas/MyPlace"
+            nextCursor:
+              type:
+                - string
+                - "null"
+
+    CreateMyPlaceRequest:
+      type: object
+      additionalProperties: false
+      required: [naverPlaceId, purpose, mood]
+      properties:
+        naverPlaceId:
+          type: string
+          minLength: 1
+          maxLength: 100
+        purpose:
+          $ref: "#/components/schemas/Purpose"
+        mood:
+          $ref: "#/components/schemas/Mood"
+
+    UpdateMyPlaceRequest:
+      type: object
+      additionalProperties: false
+      required: [purpose, mood, applyToMeetingIds]
+      properties:
+        purpose:
+          $ref: "#/components/schemas/Purpose"
+        mood:
+          $ref: "#/components/schemas/Mood"
+        applyToMeetingIds:
+          type: array
+          uniqueItems: true
+          items:
+            type: string
+            format: uuid
+
+    MeetingCandidateEffect:
+      type: object
+      required: [meetingId, action, candidateRemoved]
+      properties:
+        meetingId:
+          type: string
+          format: uuid
+        action:
+          type: string
+          enum: [UPDATED, RECOMMENDATION_REMOVED, UNCHANGED]
+        candidateRemoved:
+          type: boolean
+
+    MyPlaceMutationResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [userPlace, meetingEffects]
+          properties:
+            userPlace:
+              $ref: "#/components/schemas/MyPlace"
+            meetingEffects:
+              type: array
+              items:
+                $ref: "#/components/schemas/MeetingCandidateEffect"
+
+    UnregisterMyPlaceRequest:
+      type: object
+      additionalProperties: false
+      required: [removeFromMeetingIds]
+      properties:
+        removeFromMeetingIds:
+          type: array
+          uniqueItems: true
+          items:
+            type: string
+            format: uuid
+
+    UnregisterMyPlaceResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [unregistered, meetingEffects]
+          properties:
+            unregistered:
+              type: boolean
+              const: true
+            meetingEffects:
+              type: array
+              items:
+                $ref: "#/components/schemas/MeetingCandidateEffect"
+
+    FinalPlaceSummary:
+      type: object
+      required: [candidateId, name]
+      properties:
+        candidateId:
+          type: string
+          format: uuid
+        name:
+          type: string
+
+    HomeMeeting:
+      type: object
+      required:
+        - id
+        - name
+        - role
+        - status
+        - startsAt
+        - currentMemberCount
+        - capacity
+        - voteRequired
+        - showVoteAlert
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          maxLength: 20
+        role:
+          $ref: "#/components/schemas/MemberRole"
+        status:
+          $ref: "#/components/schemas/MeetingStatus"
+        purpose:
+          $ref: "#/components/schemas/Purpose"
+        mood:
+          $ref: "#/components/schemas/Mood"
+        startsAt:
+          type: string
+          format: date-time
+        currentMemberCount:
+          type: integer
+          minimum: 1
+        capacity:
+          type: integer
+          minimum: 2
+        voteRequired:
+          type: boolean
+        showVoteAlert:
+          type: boolean
+        finalPlace:
+          oneOf:
+            - $ref: "#/components/schemas/FinalPlaceSummary"
+            - type: "null"
+        displayTone:
+          type: string
+          enum: [DEFAULT, MUTED]
+
+    HomeResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required:
+            - activeMeetings
+            - completedMeetings
+            - hasHomeNotification
+            - updatedAt
+            - pollAfterMs
+          properties:
+            activeMeetings:
+              type: array
+              items:
+                $ref: "#/components/schemas/HomeMeeting"
+            completedMeetings:
+              type: array
+              items:
+                $ref: "#/components/schemas/HomeMeeting"
+            hasHomeNotification:
+              type: boolean
+            updatedAt:
+              type: string
+              format: date-time
+            pollAfterMs:
+              type: integer
+              const: 5000
+
+    CreateMeetingRequest:
+      type: object
+      additionalProperties: false
+      required: [name, capacity, startsAt, purpose, mood]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 20
+        capacity:
+          type: integer
+          minimum: 2
+          description: 서비스 정책상 최대 제한 없음
+        startsAt:
+          type: string
+          format: date-time
+          description: Asia/Seoul 기준이며 분은 00 또는 30
+        purpose:
+          $ref: "#/components/schemas/Purpose"
+        mood:
+          $ref: "#/components/schemas/Mood"
+
+    MeetingCreated:
+      type: object
+      required:
+        - id
+        - name
+        - capacity
+        - currentMemberCount
+        - startsAt
+        - purpose
+        - mood
+        - joinCode
+        - shareUrl
+        - status
+        - myRole
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          maxLength: 20
+        capacity:
+          type: integer
+          minimum: 2
+        currentMemberCount:
+          type: integer
+          const: 1
+        startsAt:
+          type: string
+          format: date-time
+        purpose:
+          $ref: "#/components/schemas/Purpose"
+        mood:
+          $ref: "#/components/schemas/Mood"
+        joinCode:
+          type: string
+          pattern: "^\\d{4}$"
+        shareUrl:
+          type: string
+          format: uri
+        status:
+          type: string
+          const: RECRUITING
+        myRole:
+          type: string
+          const: HOST
+
+    MeetingCreatedResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          $ref: "#/components/schemas/MeetingCreated"
+
+    MeetingLookupRequest:
+      type: object
+      additionalProperties: false
+      required: [joinCode]
+      properties:
+        joinCode:
+          type: string
+          pattern: "^\\d{4}$"
+
+    MeetingLookupResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required:
+            - meetingId
+            - name
+            - startsAt
+            - purpose
+            - mood
+            - currentMemberCount
+            - capacity
+            - canJoin
+            - defaultNickname
+          properties:
+            meetingId:
+              type: string
+              format: uuid
+            name:
+              type: string
+              maxLength: 20
+            startsAt:
+              type: string
+              format: date-time
+            purpose:
+              $ref: "#/components/schemas/Purpose"
+            mood:
+              $ref: "#/components/schemas/Mood"
+            currentMemberCount:
+              type: integer
+              minimum: 1
+            capacity:
+              type: integer
+              minimum: 2
+            canJoin:
+              type: boolean
+            defaultNickname:
+              type: string
+              maxLength: 20
+
+    JoinMeetingRequest:
+      type: object
+      additionalProperties: false
+      required: [joinCode, nickname]
+      properties:
+        joinCode:
+          type: string
+          pattern: "^\\d{4}$"
+        nickname:
+          type: string
+          minLength: 1
+          maxLength: 20
+
+    JoinMeetingResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [memberId, meetingId, nickname, role, rejoined, nextPath]
+          properties:
+            memberId:
+              type: string
+              format: uuid
+            meetingId:
+              type: string
+              format: uuid
+            nickname:
+              type: string
+              maxLength: 20
+            role:
+              $ref: "#/components/schemas/MemberRole"
+            rejoined:
+              type: boolean
+            nextPath:
+              type: string
+
+    MeetingMember:
+      type: object
+      required: [id, nickname, role, status, joinedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        nickname:
+          type: string
+          maxLength: 20
+        role:
+          $ref: "#/components/schemas/MemberRole"
+        status:
+          $ref: "#/components/schemas/MemberStatus"
+        joinedAt:
+          type: string
+          format: date-time
+
+    MeetingPermissions:
+      type: object
+      required:
+        - canLeave
+        - canKick
+        - canStartVote
+        - canCloseVote
+        - canDeleteMeeting
+      properties:
+        canLeave:
+          type: boolean
+        canKick:
+          type: boolean
+        canStartVote:
+          type: boolean
+        canCloseVote:
+          type: boolean
+        canDeleteMeeting:
+          type: boolean
+
+    MeetingDetailResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required:
+            - id
+            - name
+            - status
+            - capacity
+            - currentMemberCount
+            - startsAt
+            - purpose
+            - mood
+            - myRole
+            - myNickname
+            - members
+            - candidates
+            - permissions
+          properties:
+            id:
+              type: string
+              format: uuid
+            name:
+              type: string
+              maxLength: 20
+            status:
+              $ref: "#/components/schemas/MeetingStatus"
+            capacity:
+              type: integer
+              minimum: 2
+            currentMemberCount:
+              type: integer
+              minimum: 1
+            startsAt:
+              type: string
+              format: date-time
+            purpose:
+              $ref: "#/components/schemas/Purpose"
+            mood:
+              $ref: "#/components/schemas/Mood"
+            myRole:
+              $ref: "#/components/schemas/MemberRole"
+            myNickname:
+              type: string
+              maxLength: 20
+            joinCode:
+              type:
+                - string
+                - "null"
+              pattern: "^\\d{4}$"
+              description: 모임장에게만 반환
+            shareUrl:
+              type:
+                - string
+                - "null"
+              format: uri
+              description: 모임장에게만 반환
+            members:
+              type: array
+              items:
+                $ref: "#/components/schemas/MeetingMember"
+            candidates:
+              type: array
+              items:
+                $ref: "#/components/schemas/Candidate"
+            myVoteStatus:
+              oneOf:
+                - $ref: "#/components/schemas/VoteSessionStatus"
+                - type: "null"
+            finalPlace:
+              oneOf:
+                - $ref: "#/components/schemas/FinalPlaceSummary"
+                - type: "null"
+            permissions:
+              $ref: "#/components/schemas/MeetingPermissions"
+
+    KickMemberResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required:
+            - memberId
+            - status
+            - removedRecommendationCount
+            - removedCandidateCount
+          properties:
+            memberId:
+              type: string
+              format: uuid
+            status:
+              type: string
+              const: KICKED
+            removedRecommendationCount:
+              type: integer
+              minimum: 0
+            removedCandidateCount:
+              type: integer
+              minimum: 0
+
+    EligiblePlace:
+      type: object
+      required:
+        - userPlaceId
+        - placeName
+        - purpose
+        - mood
+        - matchReasons
+        - selected
+        - currentRecommenderCount
+      properties:
+        userPlaceId:
+          type: string
+          format: uuid
+        placeName:
+          type: string
+        purpose:
+          $ref: "#/components/schemas/Purpose"
+        mood:
+          $ref: "#/components/schemas/Mood"
+        matchReasons:
+          type: array
+          uniqueItems: true
+          items:
+            type: string
+            enum: [PURPOSE, MOOD]
+        selected:
+          type: boolean
+        currentRecommenderCount:
+          type: integer
+          minimum: 0
+
+    EligiblePlaceListResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [items, selectedCount, maxSelectableCount, candidatesFrozen]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: "#/components/schemas/EligiblePlace"
+            selectedCount:
+              type: integer
+              minimum: 0
+              maximum: 2
+            maxSelectableCount:
+              type: integer
+              const: 2
+            candidatesFrozen:
+              type: boolean
+
+    Candidate:
+      type: object
+      required:
+        - candidateId
+        - place
+        - recommenderCount
+        - recommendedByMe
+        - frozen
+      properties:
+        candidateId:
+          type: string
+          format: uuid
+        place:
+          type: object
+          required: [name]
+          properties:
+            name:
+              type: string
+            category:
+              type:
+                - string
+                - "null"
+            roadAddress:
+              type:
+                - string
+                - "null"
+            latitude:
+              type: number
+              format: double
+            longitude:
+              type: number
+              format: double
+        recommenderCount:
+          type: integer
+          minimum: 1
+        recommendedByMe:
+          type: boolean
+        frozen:
+          type: boolean
+
+    CandidateListResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: "#/components/schemas/Candidate"
+
+    ReplaceMyCandidatesRequest:
+      type: object
+      additionalProperties: false
+      required: [userPlaceIds]
+      properties:
+        userPlaceIds:
+          type: array
+          minItems: 0
+          maxItems: 2
+          uniqueItems: true
+          items:
+            type: string
+            format: uuid
+
+    VoteCreatedResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required:
+            - voteId
+            - status
+            - candidateCount
+            - roundsPerMember
+            - participantCount
+            - startedAt
+          properties:
+            voteId:
+              type: string
+              format: uuid
+            status:
+              type: string
+              const: OPEN
+            candidateCount:
+              type: integer
+              minimum: 2
+            roundsPerMember:
+              type: integer
+              minimum: 1
+            participantCount:
+              type: integer
+              minimum: 1
+            startedAt:
+              type: string
+              format: date-time
+
+    VoteCandidate:
+      type: object
+      required: [candidateId, name, recommenderCount]
+      properties:
+        candidateId:
+          type: string
+          format: uuid
+        name:
+          type: string
+        category:
+          type:
+            - string
+            - "null"
+        roadAddress:
+          type:
+            - string
+            - "null"
+        recommenderCount:
+          type: integer
+          minimum: 1
+
+    VoteSessionResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [status, totalRounds, completedRounds]
+          properties:
+            status:
+              $ref: "#/components/schemas/VoteSessionStatus"
+            roundNumber:
+              type:
+                - integer
+                - "null"
+              minimum: 1
+            totalRounds:
+              type: integer
+              minimum: 1
+            completedRounds:
+              type: integer
+              minimum: 0
+            candidateA:
+              oneOf:
+                - $ref: "#/components/schemas/VoteCandidate"
+                - type: "null"
+            candidateB:
+              oneOf:
+                - $ref: "#/components/schemas/VoteCandidate"
+                - type: "null"
+            nextPath:
+              type:
+                - string
+                - "null"
+
+    SubmitVoteChoiceRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - roundNumber
+        - candidateAId
+        - candidateBId
+        - selectedCandidateId
+        - requestId
+      properties:
+        roundNumber:
+          type: integer
+          minimum: 1
+        candidateAId:
+          type: string
+          format: uuid
+        candidateBId:
+          type: string
+          format: uuid
+        selectedCandidateId:
+          type: string
+          format: uuid
+        requestId:
+          type: string
+          format: uuid
+
+    NextVoteRound:
+      type: object
+      required: [roundNumber, candidateAId, candidateBId]
+      properties:
+        roundNumber:
+          type: integer
+          minimum: 1
+        candidateAId:
+          type: string
+          format: uuid
+        candidateBId:
+          type: string
+          format: uuid
+
+    SubmitVoteChoiceResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [savedRoundNumber, sessionStatus, completedRounds, totalRounds]
+          properties:
+            savedRoundNumber:
+              type: integer
+              minimum: 1
+            sessionStatus:
+              $ref: "#/components/schemas/VoteSessionStatus"
+            completedRounds:
+              type: integer
+              minimum: 1
+            totalRounds:
+              type: integer
+              minimum: 1
+            nextRound:
+              oneOf:
+                - $ref: "#/components/schemas/NextVoteRound"
+                - type: "null"
+            nextPath:
+              type:
+                - string
+                - "null"
+
+    VoteRanking:
+      type: object
+      required:
+        - rank
+        - candidateId
+        - name
+        - voteCount
+        - recommenderCount
+        - jointRank
+      properties:
+        rank:
+          type: integer
+          minimum: 1
+        candidateId:
+          type: string
+          format: uuid
+        name:
+          type: string
+        voteCount:
+          type: integer
+          minimum: 0
+        recommenderCount:
+          type: integer
+          minimum: 1
+        jointRank:
+          type: boolean
+
+    VoteResultsResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required:
+            - voteStatus
+            - meetingStatus
+            - participantCount
+            - completedParticipantCount
+            - incompleteParticipantCount
+            - rankings
+            - updatedAt
+            - pollAfterMs
+          properties:
+            voteStatus:
+              $ref: "#/components/schemas/VoteStatus"
+            meetingStatus:
+              $ref: "#/components/schemas/MeetingStatus"
+            participantCount:
+              type: integer
+              minimum: 1
+            completedParticipantCount:
+              type: integer
+              minimum: 0
+            incompleteParticipantCount:
+              type: integer
+              minimum: 0
+            rankings:
+              type: array
+              items:
+                $ref: "#/components/schemas/VoteRanking"
+            finalCandidate:
+              oneOf:
+                - $ref: "#/components/schemas/FinalPlaceSummary"
+                - type: "null"
+            updatedAt:
+              type: string
+              format: date-time
+            pollAfterMs:
+              type: integer
+              const: 5000
+
+    CloseVoteRequest:
+      type: object
+      additionalProperties: false
+      required: [force]
+      properties:
+        force:
+          type: boolean
+          description: 미완료 인원이 있어도 현재까지 저장된 선택으로 종료할지 여부
+
+    CloseVoteResult:
+      type: object
+      required: [meetingStatus, resultType]
+      properties:
+        meetingStatus:
+          $ref: "#/components/schemas/MeetingStatus"
+        resultType:
+          type: string
+          enum: [SINGLE_WINNER, JOINT_FIRST]
+        finalCandidate:
+          oneOf:
+            - $ref: "#/components/schemas/FinalPlaceSummary"
+            - type: "null"
+        jointFirstCandidates:
+          type: array
+          items:
+            $ref: "#/components/schemas/VoteRanking"
+
+    CloseVoteResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          $ref: "#/components/schemas/CloseVoteResult"
+
+    FinalSelectionRequest:
+      type: object
+      additionalProperties: false
+      required: [candidateId]
+      properties:
+        candidateId:
+          type: string
+          format: uuid
+
+    FinalSelectionResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [meetingStatus, finalCandidate, completedAt]
+          properties:
+            meetingStatus:
+              type: string
+              const: COMPLETED
+            finalCandidate:
+              $ref: "#/components/schemas/FinalPlaceSummary"
+            completedAt:
+              type: string
+              format: date-time

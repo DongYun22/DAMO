@@ -1,7 +1,7 @@
 import type { ApiEnvelope, ApiErrorBody } from "@damo/contracts";
 
 export const API_URL =
-  import.meta.env.VITE_API_URL ?? "http://127.0.0.1:4010/api/v1";
+  import.meta.env.VITE_API_URL ?? "/api/v1";
 
 export class ApiError extends Error {
   constructor(

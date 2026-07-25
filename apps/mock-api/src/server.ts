@@ -1,4 +1,6 @@
-import { pathToFileURL } from "node:url";
+import { existsSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import cors from "cors";
 import express, {
   type ErrorRequestHandler,
@@ -22,6 +24,10 @@ const purposeSchema = z.enum(["STUDY", "CAFE", "MEAL", "DRINK"]);
 const moodSchema = z.enum(["FUN", "QUIET", "BUSINESS", "TIPSY"]);
 
 export const app = express();
+const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));
+const webDistDirectory = path.resolve(moduleDirectory, "../../web/dist");
+const webIndexPath = path.join(webDistDirectory, "index.html");
+const servesWeb = process.env.DAMO_SERVE_WEB === "true";
 
 app.use(
   cors({
@@ -399,6 +405,25 @@ app.post("/api/v1/__mock/reset", (_req, res) => {
   return ok(res, { reset: true });
 });
 
+if (servesWeb) {
+  app.use(express.static(webDistDirectory));
+  app.use((req, res, next) => {
+    if (
+      req.method !== "GET" ||
+      req.path.startsWith("/api/") ||
+      req.path === "/health" ||
+      !req.accepts("html")
+    ) {
+      next();
+      return;
+    }
+
+    res.sendFile(webIndexPath, (error) => {
+      if (error) next(error);
+    });
+  });
+}
+
 app.use((_req, _res, next) => {
   next(new StoreError(404, "ROUTE_NOT_FOUND", "요청한 API 경로를 찾을 수 없습니다."));
 });
@@ -436,10 +461,17 @@ const errorHandler: ErrorRequestHandler = (error, _req, res, _next) => {
 app.use(errorHandler);
 
 const port = Number(process.env.PORT ?? 4010);
+const host = process.env.DAMO_HOST ?? "127.0.0.1";
 const entry = process.argv[1] ? pathToFileURL(process.argv[1]).href : "";
 
 if (import.meta.url === entry) {
-  app.listen(port, "127.0.0.1", () => {
-    console.log(`DAMO mock API: http://127.0.0.1:${port}`);
+  if (servesWeb && !existsSync(webIndexPath)) {
+    throw new Error(
+      `웹 빌드 결과를 찾을 수 없습니다: ${webIndexPath}. 먼저 pnpm build:render를 실행해 주세요.`
+    );
+  }
+
+  app.listen(port, host, () => {
+    console.log(`DAMO preview: http://${host}:${port}`);
   });
 }

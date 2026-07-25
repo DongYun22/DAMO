@@ -3,11 +3,16 @@
   "private": true,
   "version": "0.1.0",
   "packageManager": "pnpm@11.9.0",
+  "engines": {
+    "node": ">=20 <25"
+  },
   "scripts": {
     "dev": "concurrently -n api,web -c magenta,blue \"pnpm --filter @damo/mock-api dev\" \"pnpm --filter @damo/web dev\"",
     "dev:api": "pnpm --filter @damo/mock-api dev",
     "dev:web": "pnpm --filter @damo/web dev",
     "build": "pnpm -r build",
+    "build:render": "pnpm --filter @damo/contracts typecheck && pnpm --filter @damo/mock-api typecheck && pnpm --filter @damo/web build",
+    "start": "pnpm --filter @damo/mock-api start",
     "typecheck": "pnpm -r typecheck",
     "test:api": "pnpm --filter @damo/mock-api test"
   },

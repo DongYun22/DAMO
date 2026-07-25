@@ -1,0 +1,1656 @@
+import {
+  AlertTriangle,
+  CalendarDays,
+  Check,
+  ChevronRight,
+  CircleEllipsis,
+  Clock3,
+  Copy,
+  DoorOpen,
+  LogOut,
+  MapPin,
+  Minus,
+  Plus,
+  RotateCcw,
+  Share2,
+  Trash2,
+  Trophy,
+  UserMinus,
+  UsersRound,
+  Vote
+} from "lucide-react";
+import {
+  type FormEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState
+} from "react";
+import type {
+  Candidate,
+  CreateMeetingInput,
+  MeetingDetail,
+  Mood,
+  Place,
+  Purpose,
+  UserPlace,
+  VoteResults,
+  VoteSessionView
+} from "@damo/contracts";
+import {
+  MOOD_LABELS,
+  PURPOSE_LABELS,
+  STATUS_LABELS
+} from "@damo/contracts";
+import {
+  Link,
+  Navigate,
+  useLocation,
+  useNavigate,
+  useParams,
+  useSearchParams
+} from "react-router-dom";
+import { ApiError, API_URL, api } from "./api";
+import { useAuth } from "./auth";
+import {
+  CandidateRow,
+  EmptyState,
+  formatMeetingAt,
+  Loading,
+  Logo,
+  MapCanvas,
+  MeetingCard,
+  Modal,
+  PlaceMeta,
+  PlaceThumbnail,
+  PrimaryButton,
+  ProfileButton,
+  PurposeMoodFields,
+  ScreenHeader,
+  SearchInput,
+  SecondaryButton,
+  SummaryBanner,
+  UserPlaceRow
+} from "./components";
+import { useShell } from "./shell";
+
+const errorMessage = (error: unknown) =>
+  error instanceof Error ? error.message : "요청을 처리하지 못했습니다.";
+
+function InlineError({ message }: { message: string }) {
+  return message ? (
+    <p className="inline-error" role="alert">
+      <AlertTriangle size={17} />
+      {message}
+    </p>
+  ) : null;
+}
+
+function SectionTitle({
+  title,
+  count,
+  action
+}: {
+  title: string;
+  count?: number;
+  action?: React.ReactNode;
+}) {
+  return (
+    <div className="section-title">
+      <div>
+        <h2>{title}</h2>
+        {count !== undefined ? <span>{count}</span> : null}
+      </div>
+      {action}
+    </div>
+  );
+}
+
+export function LoginPage() {
+  const { user, loading, login, signup } = useAuth();
+  const navigate = useNavigate();
+  const location = useLocation();
+  const [mode, setMode] = useState<"login" | "signup">("login");
+  const [loginId, setLoginId] = useState("damo");
+  const [nickname, setNickname] = useState("가은");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("1234");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
+
+  const from =
+    (location.state as { from?: { pathname?: string } } | null)?.from?.pathname ?? "/";
+
+  if (loading) return <Loading label="로그인 확인 중" />;
+  if (user) return <Navigate to={from} replace />;
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    setError("");
+    setSubmitting(true);
+    try {
+      if (mode === "login") await login(loginId, password);
+      else await signup({ loginId, nickname, email, password });
+      navigate(from, { replace: true });
+    } catch (submitError) {
+      setError(errorMessage(submitError));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const oauth = (provider: "kakao" | "naver" | "google") => {
+    const redirectUri = `${window.location.origin}/oauth/callback`;
+    window.location.href = `${API_URL}/auth/oauth/${provider}?redirectUri=${encodeURIComponent(redirectUri)}`;
+  };
+
+  return (
+    <div className="auth-page">
+      <div className="auth-page__ambient auth-page__ambient--one" />
+      <div className="auth-page__ambient auth-page__ambient--two" />
+      <section className="auth-card">
+        <Logo />
+        <div className="auth-card__intro">
+          <span className="eyebrow">우리 모임의 다음을 정하다</span>
+          <h1>
+            장소 고민은 모으고,
+            <br />
+            선택은 가볍게.
+          </h1>
+          <p>각자의 저장 장소를 후보로 모아 A/B 선택으로 다음 만남을 정해요.</p>
+        </div>
+
+        <div className="segmented" role="tablist" aria-label="테스트 계정">
+          <button
+            type="button"
+            className={mode === "login" ? "is-active" : ""}
+            onClick={() => setMode("login")}
+          >
+            로그인
+          </button>
+          <button
+            type="button"
+            className={mode === "signup" ? "is-active" : ""}
+            onClick={() => setMode("signup")}
+          >
+            즉시 가입
+          </button>
+        </div>
+
+        <form className="auth-form" onSubmit={submit}>
+          <label>
+            <span>아이디</span>
+            <input
+              value={loginId}
+              onChange={(event) => setLoginId(event.target.value)}
+              maxLength={40}
+              autoComplete="username"
+              required
+            />
+          </label>
+          {mode === "signup" ? (
+            <>
+              <label>
+                <span>닉네임</span>
+                <input
+                  value={nickname}
+                  onChange={(event) => setNickname(event.target.value)}
+                  maxLength={20}
+                  required
+                />
+              </label>
+              <label>
+                <span>이메일 <small>선택</small></span>
+                <input
+                  value={email}
+                  onChange={(event) => setEmail(event.target.value)}
+                  type="email"
+                  autoComplete="email"
+                />
+              </label>
+            </>
+          ) : null}
+          <label>
+            <span>비밀번호</span>
+            <input
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              type="password"
+              autoComplete={mode === "login" ? "current-password" : "new-password"}
+              minLength={4}
+              required
+            />
+          </label>
+          <InlineError message={error} />
+          <PrimaryButton type="submit" disabled={submitting}>
+            {submitting ? "처리 중…" : mode === "login" ? "로그인" : "계정 만들고 시작"}
+          </PrimaryButton>
+        </form>
+
+        <div className="auth-divider"><span>또는 OAuth 목 로그인</span></div>
+        <div className="oauth-list">
+          <button className="oauth-button oauth-button--kakao" type="button" onClick={() => oauth("kakao")}>
+            <span>K</span> 카카오로 계속
+          </button>
+          <button className="oauth-button oauth-button--naver" type="button" onClick={() => oauth("naver")}>
+            <span>N</span> 네이버로 계속
+          </button>
+          <button className="oauth-button oauth-button--google" type="button" onClick={() => oauth("google")}>
+            <span>G</span> Google로 계속
+          </button>
+        </div>
+        <p className="prototype-note">
+          프로토타입 계정: <b>damo</b> / <b>1234</b>
+        </p>
+      </section>
+    </div>
+  );
+}
+
+export function OAuthCallbackPage() {
+  const { acceptOAuthToken } = useAuth();
+  const [params] = useSearchParams();
+  const navigate = useNavigate();
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    const token = params.get("accessToken");
+    if (!token) {
+      setError("OAuth 목 토큰을 받지 못했습니다.");
+      return;
+    }
+    void acceptOAuthToken(token)
+      .then(() => navigate("/", { replace: true }))
+      .catch((reason) => setError(errorMessage(reason)));
+  }, [acceptOAuthToken, navigate, params]);
+
+  return (
+    <div className="center-page">
+      {error ? (
+        <>
+          <InlineError message={error} />
+          <Link className="button button--primary" to="/login">로그인으로 돌아가기</Link>
+        </>
+      ) : (
+        <Loading label="OAuth 로그인 완료 중" />
+      )}
+    </div>
+  );
+}
+
+export function HomePage() {
+  const { user, logout } = useAuth();
+  const { home } = useShell();
+  const [profileOpen, setProfileOpen] = useState(false);
+
+  if (!home || !user) return <Loading label="모임을 불러오는 중" />;
+
+  return (
+    <div className="page page--home">
+      <ScreenHeader
+        title={`${user.nickname}님, 어디서 만날까요?`}
+        description="모임과 투표 상태를 한눈에 확인해요."
+        back={false}
+        action={
+          <button type="button" className="profile-action" onClick={() => setProfileOpen(true)}>
+            <ProfileButton nickname={user.nickname} />
+          </button>
+        }
+      />
+
+      {home.hasVoteAlert ? (
+        <SummaryBanner
+          title="새 투표가 도착했어요"
+          description="분홍색으로 표시된 모임에서 선택을 이어가세요."
+          alert
+        />
+      ) : (
+        <SummaryBanner
+          title="다음 장소를 함께 모아보세요"
+          description="지도에서 내 장소를 저장하면 모임 후보로 바로 꺼낼 수 있어요."
+        />
+      )}
+
+      <section className="meeting-section">
+        <SectionTitle title="진행 중인 모임" count={home.ongoingMeetings.length} />
+        <div className="meeting-list">
+          {home.ongoingMeetings.length ? (
+            home.ongoingMeetings.map((meeting) => (
+              <MeetingCard key={meeting.id} meeting={meeting} />
+            ))
+          ) : (
+            <EmptyState
+              title="진행 중인 모임이 없어요"
+              description="새 모임을 만들거나 받은 코드로 가입해 보세요."
+            />
+          )}
+        </div>
+      </section>
+
+      <section className="meeting-section meeting-section--completed">
+        <SectionTitle title="완료된 모임" count={home.completedMeetings.length} />
+        <div className="meeting-list">
+          {home.completedMeetings.length ? (
+            home.completedMeetings.map((meeting) => (
+              <MeetingCard key={meeting.id} meeting={meeting} />
+            ))
+          ) : (
+            <p className="muted-copy">장소가 확정된 모임이 여기에 쌓여요.</p>
+          )}
+        </div>
+      </section>
+
+      <div className="home-actions">
+        <Link to="/meetings/new" className="button button--primary">
+          <Plus size={18} /> 모임 만들기
+        </Link>
+        <Link to="/meetings/join" className="button button--secondary">
+          <DoorOpen size={18} /> 모임 가입
+        </Link>
+      </div>
+
+      <Modal open={profileOpen} title="계정" onClose={() => setProfileOpen(false)}>
+        <div className="profile-sheet">
+          <div className="profile-sheet__avatar">{user.nickname.slice(0, 1)}</div>
+          <strong>{user.nickname}</strong>
+          <span>{user.email ?? "이메일 없음"}</span>
+          <small>{user.loginProvider} 계정</small>
+        </div>
+        <SecondaryButton
+          type="button"
+          onClick={() => void logout()}
+          className="button--danger-text"
+        >
+          <LogOut size={18} /> 로그아웃
+        </SecondaryButton>
+      </Modal>
+    </div>
+  );
+}
+
+export function MapPage() {
+  const { showToast } = useShell();
+  const [query, setQuery] = useState("성수역");
+  const [places, setPlaces] = useState<Place[]>([]);
+  const [saved, setSaved] = useState<UserPlace[]>([]);
+  const [selected, setSelected] = useState<Place | null>(null);
+  const [purpose, setPurpose] = useState<Purpose>("CAFE");
+  const [mood, setMood] = useState<Mood>("FUN");
+  const [registerOpen, setRegisterOpen] = useState(false);
+  const [unregisterOpen, setUnregisterOpen] = useState(false);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
+
+  const loadSaved = useCallback(async () => {
+    setSaved(await api<UserPlace[]>("/me/places"));
+  }, []);
+
+  const search = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const result = await api<Place[]>(
+        `/map/places/search?query=${encodeURIComponent(query)}`
+      );
+      setPlaces(result);
+      setSelected((current) =>
+        current && result.some((place) => place.id === current.id)
+          ? current
+          : result[0] ?? null
+      );
+    } catch (reason) {
+      setError(errorMessage(reason));
+    } finally {
+      setLoading(false);
+    }
+  }, [query]);
+
+  useEffect(() => {
+    void Promise.all([search(), loadSaved()]);
+  }, []); // initial local prototype load
+
+  const selectedSaved = selected
+    ? saved.find((item) => item.place.id === selected.id)
+    : undefined;
+
+  const register = async () => {
+    if (!selected) return;
+    setError("");
+    try {
+      await api("/me/places", {
+        method: "POST",
+        body: JSON.stringify({
+          naverPlaceId: selected.naverPlaceId,
+          purpose,
+          mood
+        })
+      });
+      await loadSaved();
+      setRegisterOpen(false);
+      showToast("내 장소에 저장했어요.");
+    } catch (reason) {
+      setError(errorMessage(reason));
+    }
+  };
+
+  const unregister = async (applyToActiveMeetings: boolean) => {
+    if (!selectedSaved) return;
+    try {
+      await api(`/me/places/${selectedSaved.id}/unregister`, {
+        method: "POST",
+        body: JSON.stringify({ applyToActiveMeetings })
+      });
+      await loadSaved();
+      setUnregisterOpen(false);
+      showToast("내 장소 등록을 해제했어요.");
+    } catch (reason) {
+      setError(errorMessage(reason));
+    }
+  };
+
+  return (
+    <div className="page page--map">
+      <ScreenHeader title="장소 탐색" description="역 주변에서 관심 장소를 찾아보세요." back={false} />
+      <SearchInput value={query} onChange={setQuery} onSubmit={() => void search()} />
+      <InlineError message={error} />
+      {loading ? (
+        <Loading label="주변 장소 검색 중" />
+      ) : (
+        <>
+          <MapCanvas
+            places={places}
+            selectedId={selected?.id}
+            onSelect={setSelected}
+          />
+          <div className="map-result-strip" aria-label="검색된 장소">
+            {places.map((place) => (
+              <button
+                type="button"
+                key={place.id}
+                className={selected?.id === place.id ? "is-selected" : ""}
+                onClick={() => setSelected(place)}
+              >
+                {place.name}
+              </button>
+            ))}
+          </div>
+          {selected ? (
+            <section className="place-detail-card">
+              <PlaceThumbnail place={selected} large />
+              <PlaceMeta place={selected} />
+              <p>{selected.roadAddress}</p>
+              {selectedSaved ? (
+                <SecondaryButton type="button" onClick={() => setUnregisterOpen(true)}>
+                  장소 등록 해제
+                </SecondaryButton>
+              ) : (
+                <PrimaryButton type="button" onClick={() => setRegisterOpen(true)}>
+                  내 장소 등록하기
+                </PrimaryButton>
+              )}
+            </section>
+          ) : (
+            <EmptyState
+              title="검색 결과가 없어요"
+              description="다른 역 이름이나 장소명을 입력해 보세요."
+            />
+          )}
+        </>
+      )}
+
+      <Modal
+        open={registerOpen}
+        title="어떤 모임에 어울리나요?"
+        description={selected ? `${selected.name}의 목적과 성격을 하나씩 선택해 주세요.` : undefined}
+        onClose={() => setRegisterOpen(false)}
+      >
+        <PurposeMoodFields
+          purpose={purpose}
+          mood={mood}
+          onPurpose={setPurpose}
+          onMood={setMood}
+        />
+        <PrimaryButton type="button" onClick={() => void register()}>
+          확인하고 저장
+        </PrimaryButton>
+      </Modal>
+
+      <Modal
+        open={unregisterOpen}
+        title="내 장소에서 지울까요?"
+        description="투표 생성 전 모임에 제출한 후보도 함께 취소할지 선택해 주세요."
+        onClose={() => setUnregisterOpen(false)}
+      >
+        <div className="modal-actions modal-actions--stack">
+          <SecondaryButton type="button" onClick={() => void unregister(false)}>
+            내 장소에서만 해제
+          </SecondaryButton>
+          <PrimaryButton type="button" onClick={() => void unregister(true)}>
+            이번 투표 후보도 취소
+          </PrimaryButton>
+        </div>
+      </Modal>
+    </div>
+  );
+}
+
+export function MyPlacesPage() {
+  const { home, showToast } = useShell();
+  const [items, setItems] = useState<UserPlace[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [actionsFor, setActionsFor] = useState("");
+  const [editing, setEditing] = useState<UserPlace | null>(null);
+  const [removing, setRemoving] = useState<UserPlace | null>(null);
+  const [purpose, setPurpose] = useState<Purpose>("CAFE");
+  const [mood, setMood] = useState<Mood>("FUN");
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      setItems(await api<UserPlace[]>("/me/places"));
+    } catch (reason) {
+      setError(errorMessage(reason));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const openEdit = (item: UserPlace) => {
+    setEditing(item);
+    setPurpose(item.purpose);
+    setMood(item.mood);
+  };
+
+  const saveEdit = async (apply: boolean) => {
+    if (!editing) return;
+    const meetingIds = apply
+      ? home?.ongoingMeetings
+          .filter((meeting) => meeting.status === "RECRUITING")
+          .map((meeting) => meeting.id) ?? []
+      : [];
+    try {
+      await api(`/me/places/${editing.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ purpose, mood, applyToMeetingIds: meetingIds })
+      });
+      setEditing(null);
+      await load();
+      showToast(apply ? "내 장소와 이번 투표 후보를 변경했어요." : "내 장소만 변경했어요.");
+    } catch (reason) {
+      setError(errorMessage(reason));
+    }
+  };
+
+  const unregister = async (apply: boolean) => {
+    if (!removing) return;
+    try {
+      await api(`/me/places/${removing.id}/unregister`, {
+        method: "POST",
+        body: JSON.stringify({ applyToActiveMeetings: apply })
+      });
+      setRemoving(null);
+      await load();
+      showToast("장소 등록을 해제했어요.");
+    } catch (reason) {
+      setError(errorMessage(reason));
+    }
+  };
+
+  return (
+    <div className="page">
+      <ScreenHeader title="내 장소" description="후보로 꺼내 쓸 관심 장소를 관리해요." back={false} />
+      <InlineError message={error} />
+      {loading ? (
+        <Loading label="내 장소 불러오는 중" />
+      ) : items.length ? (
+        <>
+          <p className="gesture-hint">장소를 누르면 변경·등록 해제 메뉴가 열려요.</p>
+          <div className="saved-place-list">
+            {items.map((item) => (
+              <div className="saved-place-item" key={item.id}>
+                <button
+                  type="button"
+                  className="saved-place-item__main"
+                  onClick={() => setActionsFor(actionsFor === item.id ? "" : item.id)}
+                >
+                  <PlaceThumbnail place={item.place} />
+                  <div className="place-meta">
+                    <strong>{item.place.name}</strong>
+                    <span>
+                      {PURPOSE_LABELS[item.purpose]} · {MOOD_LABELS[item.mood]}
+                    </span>
+                    <small>{item.place.roadAddress}</small>
+                  </div>
+                  <CircleEllipsis size={21} />
+                </button>
+                {actionsFor === item.id ? (
+                  <div className="saved-place-item__actions is-open">
+                    <button type="button" onClick={() => openEdit(item)}>변경</button>
+                    <button type="button" onClick={() => setRemoving(item)}>등록 해제</button>
+                  </div>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        </>
+      ) : (
+        <EmptyState
+          title="아직 저장한 장소가 없어요"
+          description="지도에서 마음에 드는 장소를 먼저 저장해 보세요."
+          action={<Link className="button button--primary" to="/map">지도에서 장소 찾기</Link>}
+        />
+      )}
+
+      <Modal
+        open={Boolean(editing)}
+        title="장소 분류 변경"
+        description={editing?.place.name}
+        onClose={() => setEditing(null)}
+      >
+        <PurposeMoodFields
+          purpose={purpose}
+          mood={mood}
+          onPurpose={setPurpose}
+          onMood={setMood}
+        />
+        <div className="modal-actions modal-actions--stack">
+          <SecondaryButton type="button" onClick={() => void saveEdit(false)}>
+            내 장소만 변경
+          </SecondaryButton>
+          <PrimaryButton type="button" onClick={() => void saveEdit(true)}>
+            이번 투표에도 반영
+          </PrimaryButton>
+        </div>
+      </Modal>
+
+      <Modal
+        open={Boolean(removing)}
+        title="장소 등록을 해제할까요?"
+        description="투표가 생성된 모임의 고정 후보에는 영향을 주지 않습니다."
+        onClose={() => setRemoving(null)}
+      >
+        <div className="modal-actions modal-actions--stack">
+          <SecondaryButton type="button" onClick={() => void unregister(false)}>
+            내 장소에서만 해제
+          </SecondaryButton>
+          <PrimaryButton type="button" onClick={() => void unregister(true)}>
+            투표 전 후보도 취소
+          </PrimaryButton>
+        </div>
+      </Modal>
+    </div>
+  );
+}
+
+const toDateInput = (date: Date) => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+};
+
+export function CreateMeetingPage() {
+  const navigate = useNavigate();
+  const { refreshHome } = useShell();
+  const defaultDate = useMemo(() => {
+    const value = new Date();
+    value.setDate(value.getDate() + 7);
+    return toDateInput(value);
+  }, []);
+  const [name, setName] = useState("성수 주말 모임");
+  const [capacity, setCapacity] = useState(6);
+  const [date, setDate] = useState(defaultDate);
+  const [meridiem, setMeridiem] = useState<"AM" | "PM">("PM");
+  const [hour, setHour] = useState(7);
+  const [minute, setMinute] = useState<"00" | "30">("30");
+  const [purpose, setPurpose] = useState<Purpose>("MEAL");
+  const [mood, setMood] = useState<Mood>("FUN");
+  const [error, setError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    setError("");
+    if (!name.trim()) {
+      setError("모임 이름을 입력해 주세요.");
+      return;
+    }
+    setSubmitting(true);
+    try {
+      const hour24 =
+        meridiem === "AM" ? (hour === 12 ? 0 : hour) : hour === 12 ? 12 : hour + 12;
+      const meetingAt = `${date}T${String(hour24).padStart(2, "0")}:${minute}:00+09:00`;
+      const input: CreateMeetingInput = {
+        name: name.trim(),
+        capacity: Math.max(2, capacity),
+        meetingAt,
+        purpose,
+        mood
+      };
+      const meeting = await api<MeetingDetail>("/meetings", {
+        method: "POST",
+        body: JSON.stringify(input)
+      });
+      await refreshHome();
+      navigate(`/meetings/${meeting.id}/candidates`, {
+        state: { justCreated: true }
+      });
+    } catch (reason) {
+      setError(errorMessage(reason));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="page">
+      <ScreenHeader title="모임 만들기" description="기본 정보만 정하면 바로 사람을 초대할 수 있어요." />
+      <form className="form-card meeting-form" onSubmit={submit}>
+        <label className="field">
+          <span>모임 이름 <small>{name.length}/20</small></span>
+          <input
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+            maxLength={20}
+            required
+          />
+        </label>
+
+        <fieldset className="capacity-field">
+          <legend>정원</legend>
+          <div>
+            <button
+              type="button"
+              onClick={() => setCapacity((value) => Math.max(2, value - 1))}
+              aria-label="정원 1명 줄이기"
+            >
+              <Minus size={21} />
+            </button>
+            <label>
+              <input
+                type="number"
+                min={2}
+                value={capacity}
+                onChange={(event) => setCapacity(Math.max(2, Number(event.target.value)))}
+              />
+              <span>명</span>
+            </label>
+            <button
+              type="button"
+              onClick={() => setCapacity((value) => value + 1)}
+              aria-label="정원 1명 늘리기"
+            >
+              <Plus size={21} />
+            </button>
+          </div>
+        </fieldset>
+
+        <label className="field">
+          <span>만나는 날짜</span>
+          <span className="input-with-icon">
+            <CalendarDays size={19} />
+            <input type="date" value={date} onChange={(event) => setDate(event.target.value)} required />
+          </span>
+        </label>
+
+        <fieldset className="time-field">
+          <legend>만나는 시각</legend>
+          <div className="time-grid">
+            <select value={meridiem} onChange={(event) => setMeridiem(event.target.value as "AM" | "PM")}>
+              <option value="AM">오전</option>
+              <option value="PM">오후</option>
+            </select>
+            <select value={hour} onChange={(event) => setHour(Number(event.target.value))}>
+              {Array.from({ length: 12 }, (_, index) => index + 1).map((value) => (
+                <option key={value} value={value}>{value}시</option>
+              ))}
+            </select>
+            <select value={minute} onChange={(event) => setMinute(event.target.value as "00" | "30")}>
+              <option value="00">00분</option>
+              <option value="30">30분</option>
+            </select>
+          </div>
+          <small>오전 12시는 자정, 오후 12시는 정오예요.</small>
+        </fieldset>
+
+        <PurposeMoodFields
+          purpose={purpose}
+          mood={mood}
+          onPurpose={setPurpose}
+          onMood={setMood}
+        />
+        <InlineError message={error} />
+        <PrimaryButton type="submit" disabled={submitting}>
+          {submitting ? "모임 만드는 중…" : "모임 생성하기"}
+        </PrimaryButton>
+      </form>
+    </div>
+  );
+}
+
+interface LookupMeeting {
+  id: string;
+  name: string;
+  purpose: Purpose;
+  mood: Mood;
+  meetingAt: string;
+  currentMembers: number;
+  capacity: number;
+  canJoin: boolean;
+}
+
+export function JoinMeetingPage() {
+  const { user } = useAuth();
+  const { refreshHome } = useShell();
+  const navigate = useNavigate();
+  const [joinCode, setJoinCode] = useState("4821");
+  const [meeting, setMeeting] = useState<LookupMeeting | null>(null);
+  const [nickname, setNickname] = useState(user?.nickname ?? "");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  const lookup = async (event?: FormEvent) => {
+    event?.preventDefault();
+    setError("");
+    if (!/^\d{4}$/.test(joinCode)) {
+      setError("4자리 숫자 코드를 입력해 주세요.");
+      return;
+    }
+    setLoading(true);
+    try {
+      setMeeting(
+        await api<LookupMeeting>("/meetings/lookup", {
+          method: "POST",
+          body: JSON.stringify({ joinCode })
+        })
+      );
+    } catch (reason) {
+      setMeeting(null);
+      setError(errorMessage(reason));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const join = async () => {
+    if (!meeting) return;
+    setLoading(true);
+    try {
+      await api(`/meetings/${meeting.id}/join`, {
+        method: "POST",
+        body: JSON.stringify({ joinCode, meetingNickname: nickname })
+      });
+      await refreshHome();
+      navigate(`/meetings/${meeting.id}/candidates`);
+    } catch (reason) {
+      setError(errorMessage(reason));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="page">
+      <ScreenHeader title="모임 가입하기" description="카카오톡으로 받은 4자리 코드를 입력하세요." />
+      <form className="join-code-card" onSubmit={lookup}>
+        <span>가입 코드</span>
+        <input
+          value={joinCode}
+          onChange={(event) => {
+            setJoinCode(event.target.value.replace(/\D/g, "").slice(0, 4));
+            setMeeting(null);
+          }}
+          inputMode="numeric"
+          pattern="\d{4}"
+          maxLength={4}
+          aria-label="4자리 가입 코드"
+        />
+        <PrimaryButton type="submit" disabled={loading || joinCode.length !== 4}>
+          {loading ? "확인 중…" : "모임 확인"}
+        </PrimaryButton>
+      </form>
+      <InlineError message={error} />
+
+      {meeting ? (
+        <section className="join-preview">
+          <span className="eyebrow">가입할 모임</span>
+          <h2>{meeting.name}</h2>
+          <div className="meeting-card__tags">
+            <span>{PURPOSE_LABELS[meeting.purpose]}</span>
+            <span>{MOOD_LABELS[meeting.mood]}</span>
+          </div>
+          <p>{formatMeetingAt(meeting.meetingAt)}</p>
+          <p className="member-count"><UsersRound size={17} /> {meeting.currentMembers}/{meeting.capacity}명</p>
+          <label className="field">
+            <span>이 모임에서 사용할 닉네임 <small>{nickname.length}/20</small></span>
+            <input
+              value={nickname}
+              onChange={(event) => setNickname(event.target.value)}
+              maxLength={20}
+            />
+          </label>
+          <PrimaryButton type="button" disabled={!meeting.canJoin || !nickname.trim()} onClick={() => void join()}>
+            {meeting.canJoin ? "가입하고 후보 고르기" : "정원이 모두 찼어요"}
+          </PrimaryButton>
+        </section>
+      ) : null}
+    </div>
+  );
+}
+
+type EligiblePlace = UserPlace & { selected: boolean };
+
+export function CandidateSelectPage() {
+  const { meetingId = "" } = useParams();
+  const navigate = useNavigate();
+  const location = useLocation();
+  const { showToast, refreshHome } = useShell();
+  const [meeting, setMeeting] = useState<MeetingDetail | null>(null);
+  const [places, setPlaces] = useState<EligiblePlace[]>([]);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    void Promise.all([
+      api<MeetingDetail>(`/meetings/${meetingId}`),
+      api<EligiblePlace[]>(`/meetings/${meetingId}/eligible-places`)
+    ])
+      .then(([detail, eligible]) => {
+        setMeeting(detail);
+        setPlaces(eligible);
+        setSelectedIds(eligible.filter((item) => item.selected).map((item) => item.id));
+      })
+      .catch((reason) => setError(errorMessage(reason)))
+      .finally(() => setLoading(false));
+  }, [meetingId]);
+
+  const toggle = (id: string) => {
+    setError("");
+    setSelectedIds((current) => {
+      if (current.includes(id)) return current.filter((value) => value !== id);
+      if (current.length >= 2) {
+        setError("후보는 한 사람당 최대 2개까지 선택할 수 있어요.");
+        return current;
+      }
+      return [...current, id];
+    });
+  };
+
+  const save = async () => {
+    try {
+      await api(`/meetings/${meetingId}/candidates/me`, {
+        method: "PUT",
+        body: JSON.stringify({ userPlaceIds: selectedIds })
+      });
+      await refreshHome();
+      showToast(
+        selectedIds.length
+          ? `${selectedIds.length}곳을 후보로 반영했어요.`
+          : "후보 없이 모임에 참여했어요."
+      );
+      navigate(`/meetings/${meetingId}`, { replace: true });
+    } catch (reason) {
+      setError(errorMessage(reason));
+    }
+  };
+
+  if (loading) return <Loading label="선택 가능한 내 장소 확인 중" />;
+
+  return (
+    <div className="page">
+      <ScreenHeader
+        title="후보 장소 선택"
+        description={meeting ? `${meeting.name} · 최대 2곳` : "최대 2곳"}
+      />
+      {location.state && (location.state as { justCreated?: boolean }).justCreated ? (
+        <SummaryBanner
+          title={`가입 코드 ${meeting?.joinCode ?? ""}`}
+          description="코드는 모임 상세 화면에서 언제든 다시 복사할 수 있어요."
+        />
+      ) : null}
+      <div className="selection-summary">
+        <div>
+          <strong>{selectedIds.length}</strong>
+          <span>/ 2곳 선택</span>
+        </div>
+        <p>모임 목적 또는 성격 중 하나만 일치해도 보여요.</p>
+      </div>
+      <InlineError message={error} />
+      {places.length ? (
+        <div className="candidate-select-list">
+          {places.map((item) => {
+            const purposeMatch = meeting?.purpose === item.purpose;
+            const moodMatch = meeting?.mood === item.mood;
+            return (
+              <div key={item.id} className="eligible-place">
+                <UserPlaceRow
+                  item={item}
+                  selected={selectedIds.includes(item.id)}
+                  onClick={() => toggle(item.id)}
+                />
+                <div className="match-reasons">
+                  {purposeMatch ? <span>목적 일치 · {PURPOSE_LABELS[item.purpose]}</span> : null}
+                  {moodMatch ? <span>성격 일치 · {MOOD_LABELS[item.mood]}</span> : null}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <EmptyState
+          title="조건에 맞는 내 장소가 없어요"
+          description="후보를 고르지 않고 넘어가거나 지도에서 장소를 더 저장할 수 있어요."
+          action={<Link className="button button--secondary" to="/map">지도에서 찾기</Link>}
+        />
+      )}
+      <div className="sticky-page-action">
+        <PrimaryButton type="button" onClick={() => void save()}>
+          {selectedIds.length ? "선택 완료" : "후보 없이 넘어가기"}
+        </PrimaryButton>
+      </div>
+    </div>
+  );
+}
+
+export function MeetingDetailPage() {
+  const { meetingId = "" } = useParams();
+  const navigate = useNavigate();
+  const { user } = useAuth();
+  const { refreshHome, showToast } = useShell();
+  const [meeting, setMeeting] = useState<MeetingDetail | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [startOpen, setStartOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [kickMemberId, setKickMemberId] = useState("");
+
+  const load = useCallback(async () => {
+    try {
+      setMeeting(await api<MeetingDetail>(`/meetings/${meetingId}`));
+    } catch (reason) {
+      setError(errorMessage(reason));
+    } finally {
+      setLoading(false);
+    }
+  }, [meetingId]);
+
+  useEffect(() => {
+    void load();
+    const timer = window.setInterval(() => void load(), 5000);
+    return () => window.clearInterval(timer);
+  }, [load]);
+
+  if (loading) return <Loading label="모임 정보 불러오는 중" />;
+  if (!meeting) {
+    return (
+      <div className="page">
+        <ScreenHeader title="모임" />
+        <InlineError message={error} />
+      </div>
+    );
+  }
+
+  const isHost = meeting.role === "HOST";
+
+  const copyInvite = async () => {
+    const text = `${meeting.name}\n가입 코드: ${meeting.joinCode}\n${meeting.shareUrl}`;
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      window.prompt("아래 초대 정보를 복사해 주세요.", text);
+    }
+    showToast("초대 링크와 코드를 복사했어요.");
+  };
+
+  const createVote = async () => {
+    try {
+      await api(`/meetings/${meetingId}/vote`, { method: "POST", body: "{}" });
+      setStartOpen(false);
+      await refreshHome();
+      navigate(`/meetings/${meetingId}/vote`);
+    } catch (reason) {
+      setError(errorMessage(reason));
+      setStartOpen(false);
+    }
+  };
+
+  const leave = async () => {
+    try {
+      await api(`/meetings/${meetingId}/leave`, { method: "POST", body: "{}" });
+      await refreshHome();
+      navigate("/");
+    } catch (reason) {
+      setError(errorMessage(reason));
+    }
+  };
+
+  const kick = async () => {
+    if (!kickMemberId) return;
+    try {
+      setMeeting(
+        await api<MeetingDetail>(
+          `/meetings/${meetingId}/members/${kickMemberId}/kick`,
+          { method: "POST", body: "{}" }
+        )
+      );
+      setKickMemberId("");
+      showToast("모임원을 내보냈어요.");
+    } catch (reason) {
+      setError(errorMessage(reason));
+    }
+  };
+
+  const removeMeeting = async () => {
+    try {
+      await api(`/meetings/${meetingId}`, { method: "DELETE" });
+      await refreshHome();
+      navigate("/");
+    } catch (reason) {
+      setError(errorMessage(reason));
+    }
+  };
+
+  return (
+    <div className="page page--detail">
+      <ScreenHeader
+        title={meeting.name}
+        description={STATUS_LABELS[meeting.status]}
+        action={
+          isHost ? (
+            <button type="button" className="icon-button" onClick={() => setMenuOpen(true)} aria-label="모임 메뉴">
+              <CircleEllipsis size={22} />
+            </button>
+          ) : undefined
+        }
+      />
+      <InlineError message={error} />
+      <section className="meeting-hero">
+        <div className="meeting-hero__tags">
+          <span>{PURPOSE_LABELS[meeting.purpose]}</span>
+          <span>{MOOD_LABELS[meeting.mood]}</span>
+        </div>
+        <p><CalendarDays size={18} /> {formatMeetingAt(meeting.meetingAt)}</p>
+        <p><UsersRound size={18} /> 현재 {meeting.currentMembers}/{meeting.capacity}명</p>
+        {isHost ? (
+          <div className="invite-code">
+            <div>
+              <span>가입 코드</span>
+              <strong>{meeting.joinCode}</strong>
+            </div>
+            <button type="button" onClick={() => void copyInvite()}>
+              <Share2 size={18} /> 초대 복사
+            </button>
+          </div>
+        ) : null}
+      </section>
+
+      <section>
+        <SectionTitle
+          title="후보 장소"
+          count={meeting.candidates.length}
+          action={
+            meeting.status === "RECRUITING" ? (
+              <Link to={`/meetings/${meetingId}/candidates`}>내 후보 변경</Link>
+            ) : undefined
+          }
+        />
+        <div className="candidate-list">
+          {meeting.candidates.length ? (
+            meeting.candidates.map((candidate) => (
+              <CandidateRow key={candidate.id} candidate={candidate} />
+            ))
+          ) : (
+            <EmptyState title="아직 후보가 없어요" description="각자의 내 장소에서 최대 2곳까지 고를 수 있어요." />
+          )}
+        </div>
+      </section>
+
+      <section>
+        <SectionTitle title="모임원" count={meeting.members.length} />
+        <div className="member-list">
+          {meeting.members.map((member) => (
+            <div className="member-row" key={member.id}>
+              <span className="member-row__avatar">{member.meetingNickname.slice(0, 1)}</span>
+              <div>
+                <strong>{member.meetingNickname}</strong>
+                <span>{member.role === "HOST" ? "모임장" : "모임원"}</span>
+              </div>
+              {isHost && member.role !== "HOST" && meeting.status === "RECRUITING" ? (
+                <button type="button" onClick={() => setKickMemberId(member.id)} aria-label={`${member.meetingNickname} 내보내기`}>
+                  <UserMinus size={18} />
+                </button>
+              ) : member.userId === user?.id ? (
+                <span className="me-label">나</span>
+              ) : null}
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <div className="detail-actions">
+        {meeting.status === "RECRUITING" && isHost ? (
+          <PrimaryButton
+            type="button"
+            disabled={meeting.candidates.length < 2}
+            onClick={() => setStartOpen(true)}
+          >
+            <Vote size={18} />
+            {meeting.candidates.length < 2 ? "후보 2곳 이상 필요" : "투표 시작"}
+          </PrimaryButton>
+        ) : null}
+        {meeting.status === "RECRUITING" && !isHost ? (
+          <SecondaryButton type="button" onClick={() => void leave()}>
+            모임 탈퇴
+          </SecondaryButton>
+        ) : null}
+        {meeting.status === "VOTING" ? (
+          <>
+            <PrimaryButton type="button" onClick={() => navigate(`/meetings/${meetingId}/vote`)}>
+              {meeting.myVoteCompleted ? "투표 결과 보기" : "투표 이어서 하기"}
+            </PrimaryButton>
+            {isHost ? (
+              <SecondaryButton type="button" onClick={() => navigate(`/meetings/${meetingId}/results`)}>
+                투표 현황·종료
+              </SecondaryButton>
+            ) : null}
+          </>
+        ) : null}
+        {meeting.status === "FINAL_SELECTION" || meeting.status === "COMPLETED" ? (
+          <PrimaryButton type="button" onClick={() => navigate(`/meetings/${meetingId}/results`)}>
+            결과 확인
+          </PrimaryButton>
+        ) : null}
+      </div>
+
+      <Modal
+        open={startOpen}
+        title="투표를 시작할까요?"
+        description={`후보 ${meeting.candidates.length}곳이 고정되고 모든 모임원에게 투표 알림이 표시됩니다.`}
+        onClose={() => setStartOpen(false)}
+      >
+        <div className="modal-actions">
+          <SecondaryButton type="button" onClick={() => setStartOpen(false)}>취소</SecondaryButton>
+          <PrimaryButton type="button" onClick={() => void createVote()}>투표 생성</PrimaryButton>
+        </div>
+      </Modal>
+
+      <Modal
+        open={menuOpen}
+        title="모임 관리"
+        description="삭제는 되돌릴 수 없으므로 메뉴 안에 작게 배치했어요."
+        onClose={() => setMenuOpen(false)}
+      >
+        <SecondaryButton
+          type="button"
+          className="button--danger-text"
+          onClick={() => {
+            setMenuOpen(false);
+            setDeleteOpen(true);
+          }}
+        >
+          <Trash2 size={18} /> 모임 삭제
+        </SecondaryButton>
+      </Modal>
+
+      <Modal
+        open={deleteOpen}
+        title="모임을 정말 삭제할까요?"
+        description="공유 링크와 가입 코드는 즉시 사용할 수 없게 됩니다. 참여자와 투표 기록도 화면에서 사라집니다."
+        onClose={() => setDeleteOpen(false)}
+      >
+        <div className="danger-box">
+          <AlertTriangle size={20} />
+          <span>{meeting.name}을 삭제하면 되돌릴 수 없어요.</span>
+        </div>
+        <div className="modal-actions">
+          <SecondaryButton type="button" onClick={() => setDeleteOpen(false)}>취소</SecondaryButton>
+          <PrimaryButton type="button" className="button--danger" onClick={() => void removeMeeting()}>
+            삭제
+          </PrimaryButton>
+        </div>
+      </Modal>
+
+      <Modal
+        open={Boolean(kickMemberId)}
+        title="모임원을 내보낼까요?"
+        description="이 모임원이 추천한 장소도 후보에서 빠집니다. 다른 추천자가 남아 있으면 후보는 유지됩니다."
+        onClose={() => setKickMemberId("")}
+      >
+        <div className="modal-actions">
+          <SecondaryButton type="button" onClick={() => setKickMemberId("")}>취소</SecondaryButton>
+          <PrimaryButton type="button" onClick={() => void kick()}>내보내기</PrimaryButton>
+        </div>
+      </Modal>
+    </div>
+  );
+}
+
+export function VotePage() {
+  const { meetingId = "" } = useParams();
+  const navigate = useNavigate();
+  const { refreshHome } = useShell();
+  const [meeting, setMeeting] = useState<MeetingDetail | null>(null);
+  const [session, setSession] = useState<VoteSessionView | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [choosing, setChoosing] = useState("");
+  const [error, setError] = useState("");
+
+  const load = useCallback(async () => {
+    try {
+      const [detail, currentSession] = await Promise.all([
+        api<MeetingDetail>(`/meetings/${meetingId}`),
+        api<VoteSessionView>(`/meetings/${meetingId}/vote/session`)
+      ]);
+      setMeeting(detail);
+      setSession(currentSession);
+      if (currentSession.status === "COMPLETED") {
+        navigate(`/meetings/${meetingId}/results`, { replace: true });
+      }
+    } catch (reason) {
+      setError(errorMessage(reason));
+    } finally {
+      setLoading(false);
+    }
+  }, [meetingId, navigate]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const choose = async (candidate: Candidate) => {
+    if (!session?.round || choosing) return;
+    setChoosing(candidate.id);
+    setError("");
+    try {
+      const next = await api<VoteSessionView>(`/meetings/${meetingId}/vote/choices`, {
+        method: "POST",
+        body: JSON.stringify({
+          roundNumber: session.round.roundNumber,
+          selectedCandidateId: candidate.id
+        })
+      });
+      if (next.status === "COMPLETED") {
+        await refreshHome();
+        window.setTimeout(
+          () => navigate(`/meetings/${meetingId}/results`, { replace: true }),
+          360
+        );
+      } else {
+        setSession(next);
+        setChoosing("");
+      }
+    } catch (reason) {
+      setError(errorMessage(reason));
+      setChoosing("");
+    }
+  };
+
+  if (loading) return <Loading label="투표 불러오는 중" />;
+  if (!session?.round || !meeting) {
+    return (
+      <div className="page">
+        <ScreenHeader title="투표" />
+        <InlineError message={error || "진행할 투표가 없습니다."} />
+      </div>
+    );
+  }
+
+  const { round } = session;
+  const progress = (round.completedRounds / round.totalRounds) * 100;
+
+  return (
+    <div className="page page--vote">
+      <ScreenHeader title={meeting.name} description="더 마음에 드는 장소를 골라주세요." />
+      <div className="vote-progress">
+        <div><span style={{ width: `${progress}%` }} /></div>
+        <strong>{round.roundNumber} / {round.totalRounds}</strong>
+      </div>
+      <InlineError message={error} />
+      <MapCanvas
+        compact
+        places={[round.candidateA.place, round.candidateB.place]}
+        selectedId={choosing ? (choosing === round.candidateA.id ? round.candidateA.place.id : round.candidateB.place.id) : undefined}
+      />
+      <div className="versus-label"><span>A</span><b>둘 중 어디가 좋나요?</b><span>B</span></div>
+      <div className="vote-choice-list">
+        {[round.candidateA, round.candidateB].map((candidate, index) => (
+          <button
+            type="button"
+            key={candidate.id}
+            className={`vote-choice ${choosing === candidate.id ? "is-selected" : ""} ${
+              choosing && choosing !== candidate.id ? "is-muted" : ""
+            }`}
+            onClick={() => void choose(candidate)}
+            disabled={Boolean(choosing)}
+          >
+            <span className="vote-choice__letter">{index === 0 ? "A" : "B"}</span>
+            <PlaceThumbnail place={candidate.place} large />
+            <div>
+              <h2>{candidate.place.name}</h2>
+              <p>{candidate.place.category}</p>
+              <small>{candidate.place.roadAddress}</small>
+              <span className="recommend-count">추천한 사람 {candidate.recommendationCount}명</span>
+            </div>
+            <Check className="vote-choice__check" size={22} />
+          </button>
+        ))}
+      </div>
+      <p className="vote-helper">
+        선택된 장소는 다음 후보와 계속 비교돼요. 브라우저를 닫아도 다음 라운드부터 이어집니다.
+      </p>
+    </div>
+  );
+}
+
+export function ResultsPage() {
+  const { meetingId = "" } = useParams();
+  const navigate = useNavigate();
+  const { refreshHome, showToast } = useShell();
+  const [meeting, setMeeting] = useState<MeetingDetail | null>(null);
+  const [results, setResults] = useState<VoteResults | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [forceCloseOpen, setForceCloseOpen] = useState(false);
+  const [closing, setClosing] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      const [detail, voteResults] = await Promise.all([
+        api<MeetingDetail>(`/meetings/${meetingId}`),
+        api<VoteResults>(`/meetings/${meetingId}/vote/results`)
+      ]);
+      setMeeting(detail);
+      setResults(voteResults);
+      setError("");
+    } catch (reason) {
+      setError(errorMessage(reason));
+    } finally {
+      setLoading(false);
+    }
+  }, [meetingId]);
+
+  useEffect(() => {
+    void load();
+    const timer = window.setInterval(() => void load(), 5000);
+    return () => window.clearInterval(timer);
+  }, [load]);
+
+  const closeVote = async (force: boolean) => {
+    setClosing(true);
+    try {
+      const next = await api<VoteResults>(`/meetings/${meetingId}/vote/close`, {
+        method: "POST",
+        body: JSON.stringify({ force })
+      });
+      setResults(next);
+      setForceCloseOpen(false);
+      await Promise.all([load(), refreshHome()]);
+      showToast(
+        next.meetingStatus === "COMPLETED"
+          ? "1위 장소가 최종 확정됐어요."
+          : "공동 1위 중 최종 장소를 선택해 주세요."
+      );
+    } catch (reason) {
+      if (reason instanceof ApiError && reason.code === "VOTE_HAS_INCOMPLETE_MEMBERS") {
+        setForceCloseOpen(true);
+      } else {
+        setError(errorMessage(reason));
+      }
+    } finally {
+      setClosing(false);
+    }
+  };
+
+  const finalSelect = async (candidateId: string) => {
+    try {
+      const next = await api<VoteResults>(
+        `/meetings/${meetingId}/vote/final-selection`,
+        { method: "POST", body: JSON.stringify({ candidateId }) }
+      );
+      setResults(next);
+      await Promise.all([load(), refreshHome()]);
+      showToast("최종 장소를 확정했어요.");
+    } catch (reason) {
+      setError(errorMessage(reason));
+    }
+  };
+
+  if (loading) return <Loading label="실시간 결과 집계 중" />;
+  if (!meeting || !results) {
+    return (
+      <div className="page">
+        <ScreenHeader title="투표 결과" />
+        <InlineError message={error} />
+      </div>
+    );
+  }
+
+  const isHost = meeting.role === "HOST";
+  const canSeeScores = results.myVoteCompleted || results.voteStatus !== "OPEN";
+  const finalResult = results.results.find((item) => item.isFinal);
+
+  return (
+    <div className="page page--results">
+      <ScreenHeader title="투표 결과" description={meeting.name} />
+      <InlineError message={error} />
+
+      {finalResult ? (
+        <section className="winner-card">
+          <span><Trophy size={22} /> 최종 장소</span>
+          <PlaceThumbnail place={finalResult.candidate.place} large />
+          <h2>{finalResult.candidate.place.name}</h2>
+          <p>{finalResult.candidate.place.roadAddress}</p>
+          <strong>{finalResult.voteCount}표 · 추천 {finalResult.recommendationCount}명</strong>
+        </section>
+      ) : (
+        <section className="result-status-card">
+          <div className="result-status-card__ring">
+            <strong>{results.completedMembers}</strong>
+            <span>/{results.totalMembers}</span>
+          </div>
+          <div>
+            <span className="eyebrow">
+              {results.voteStatus === "OPEN" ? "실시간 참여 현황" : "집계 완료"}
+            </span>
+            <h2>
+              {results.incompleteMembers
+                ? `${results.incompleteMembers}명이 아직 선택 중이에요`
+                : "모두 투표를 마쳤어요"}
+            </h2>
+            <p>결과는 5초마다 자동으로 갱신됩니다.</p>
+          </div>
+        </section>
+      )}
+
+      {!canSeeScores ? (
+        <section className="scores-locked">
+          <Vote size={24} />
+          <h2>내 투표를 마치면 득표수가 보여요</h2>
+          <p>다른 사람의 선택에 영향을 받지 않도록 결과를 잠시 가렸어요.</p>
+          <PrimaryButton type="button" onClick={() => navigate(`/meetings/${meetingId}/vote`)}>
+            내 투표 이어서 하기
+          </PrimaryButton>
+        </section>
+      ) : (
+        <section>
+          <SectionTitle
+            title={results.voteStatus === "OPEN" ? "현재 순위" : "최종 순위"}
+            action={
+              results.voteStatus === "OPEN" ? (
+                <button className="refresh-button" type="button" onClick={() => void load()}>
+                  <RotateCcw size={16} /> 새로고침
+                </button>
+              ) : undefined
+            }
+          />
+          <div className="ranking-list">
+            {results.results.map((item) => (
+              <div
+                className={`ranking-row ${item.rank === 1 ? "ranking-row--first" : ""}`}
+                key={item.candidate.id}
+              >
+                <span className="ranking-row__rank">
+                  {item.isJointRank ? "공동 " : ""}{item.rank}위
+                </span>
+                <CandidateRow candidate={item.candidate} showVotes={item.voteCount} />
+                {meeting.status === "FINAL_SELECTION" &&
+                isHost &&
+                results.tiedFirstCandidateIds.includes(item.candidate.id) ? (
+                  <PrimaryButton type="button" onClick={() => void finalSelect(item.candidate.id)}>
+                    이 장소로 확정
+                  </PrimaryButton>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {isHost && results.voteStatus === "OPEN" ? (
+        <div className="sticky-page-action">
+          <PrimaryButton
+            type="button"
+            disabled={closing}
+            onClick={() => void closeVote(false)}
+          >
+            {closing ? "확인 중…" : "투표 종료"}
+          </PrimaryButton>
+        </div>
+      ) : null}
+
+      <Modal
+        open={forceCloseOpen}
+        title="아직 투표를 완료하지 않은 인원이 있어요"
+        description={`현재 ${results.incompleteMembers}명이 미완료 상태입니다. 저장된 선택까지만 집계하고 종료할까요?`}
+        onClose={() => setForceCloseOpen(false)}
+      >
+        <div className="modal-actions modal-actions--stack">
+          <SecondaryButton type="button" onClick={() => setForceCloseOpen(false)}>
+            기다릴게요
+          </SecondaryButton>
+          <PrimaryButton type="button" onClick={() => void closeVote(true)}>
+            그래도 종료
+          </PrimaryButton>
+        </div>
+      </Modal>
+    </div>
+  );
+}
+
+export function NotFoundPage() {
+  return (
+    <div className="center-page">
+      <Logo />
+      <h1>페이지를 찾을 수 없어요</h1>
+      <p>링크가 만료됐거나 주소가 변경됐을 수 있습니다.</p>
+      <Link className="button button--primary" to="/">홈으로 이동</Link>
+    </div>
+  );
+}

@@ -1,0 +1,18 @@
+{
+  "name": "damo",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@11.9.0",
+  "scripts": {
+    "dev": "concurrently -n api,web -c magenta,blue \"pnpm --filter @damo/mock-api dev\" \"pnpm --filter @damo/web dev\"",
+    "dev:api": "pnpm --filter @damo/mock-api dev",
+    "dev:web": "pnpm --filter @damo/web dev",
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "test:api": "pnpm --filter @damo/mock-api test"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1",
+    "typescript": "^5.9.2"
+  }
+}

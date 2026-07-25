@@ -1,0 +1,116 @@
+import assert from "node:assert/strict";
+import { after, before, describe, it } from "node:test";
+import type { AddressInfo } from "node:net";
+import { app } from "./server.js";
+import { store } from "./store.js";
+
+let baseUrl = "";
+const server = app.listen(0, "127.0.0.1");
+
+before(async () => {
+  await new Promise<void>((resolve) => server.once("listening", resolve));
+  const address = server.address() as AddressInfo;
+  baseUrl = `http://127.0.0.1:${address.port}`;
+});
+
+after(() => server.close());
+
+const request = async (path: string, init: RequestInit = {}) =>
+  fetch(`${baseUrl}${path}`, {
+    ...init,
+    headers: {
+      "content-type": "application/json",
+      authorization: "Bearer mock-token-user-1",
+      ...init.headers
+    }
+  });
+
+describe("DAMO mock API", () => {
+  it("returns seeded home sections and vote alert", async () => {
+    store.reset();
+    const response = await request("/api/v1/me/home");
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.data.ongoingMeetings.length, 2);
+    assert.equal(body.data.completedMeetings.length, 1);
+    assert.equal(body.data.hasVoteAlert, true);
+  });
+
+  it("creates a meeting and enforces minimum capacity", async () => {
+    store.reset();
+    const invalid = await request("/api/v1/meetings", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "작은 모임",
+        capacity: 1,
+        meetingAt: "2026-08-20T10:00:00+09:00",
+        purpose: "CAFE",
+        mood: "QUIET"
+      })
+    });
+    assert.equal(invalid.status, 400);
+
+    const valid = await request("/api/v1/meetings", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "새 카페 모임",
+        capacity: 4,
+        meetingAt: "2026-08-20T10:30:00+09:00",
+        purpose: "CAFE",
+        mood: "QUIET"
+      })
+    });
+    assert.equal(valid.status, 201);
+    const body = await valid.json();
+    assert.match(body.data.joinCode, /^\d{4}$/);
+    assert.notEqual(body.data.joinCode, "4821");
+    assert.notEqual(body.data.joinCode, "7314");
+    assert.equal(body.data.role, "HOST");
+
+    const another = await request("/api/v1/meetings", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "두 번째 모임",
+        capacity: 2,
+        meetingAt: "2026-08-20T11:00:00+09:00",
+        purpose: "STUDY",
+        mood: "BUSINESS"
+      })
+    });
+    const anotherBody = await another.json();
+    assert.notEqual(anotherBody.data.joinCode, body.data.joinCode);
+  });
+
+  it("runs the current user's N-1 vote and removes the alert", async () => {
+    store.reset();
+    const first = await request("/api/v1/meetings/meeting-2/vote/session");
+    const firstBody = await first.json();
+    assert.equal(firstBody.data.totalRounds, 2);
+
+    const round1 = firstBody.data.round;
+    await request("/api/v1/meetings/meeting-2/vote/choices", {
+      method: "POST",
+      body: JSON.stringify({
+        roundNumber: round1.roundNumber,
+        selectedCandidateId: round1.candidateA.id
+      })
+    });
+
+    const second = await request("/api/v1/meetings/meeting-2/vote/session");
+    const secondBody = await second.json();
+    const round2 = secondBody.data.round;
+    const completed = await request("/api/v1/meetings/meeting-2/vote/choices", {
+      method: "POST",
+      body: JSON.stringify({
+        roundNumber: round2.roundNumber,
+        selectedCandidateId: round2.candidateB.id
+      })
+    });
+    const completedBody = await completed.json();
+    assert.equal(completedBody.data.status, "COMPLETED");
+
+    const home = await request("/api/v1/me/home");
+    const homeBody = await home.json();
+    assert.equal(homeBody.data.hasVoteAlert, false);
+  });
+});

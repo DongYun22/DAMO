@@ -83,3 +83,40 @@ pnpm build
 - 실제 배포 서버에서는 비밀번호 해시, 영구 데이터베이스, OAuth 제공자 검증, 접근 토큰 갱신, 요청 제한과 로그 처리가 추가로 필요합니다.
 - 결과 화면은 현재 5초 간격 조회 방식입니다. 사용량이 늘면 WebSocket 또는 Server-Sent Events로 교체할 수 있습니다.
 - API 계약의 기준 문서는 `docs/openapi.yaml`이며, 화면·규칙의 기준은 `docs/flow.md`와 `docs/data-model.md`입니다.
+
+## 8. Render 통합 테스트 배포
+
+루트의 `render.yaml`은 Vite 웹 빌드와 Express 목 API를 하나의 Render Web Service로 배포합니다. 배포 환경에서는 웹과 API가 동일한 도메인을 사용하므로 별도의 CORS 주소 설정이 필요하지 않습니다.
+
+1. 변경사항을 GitHub에 푸시합니다.
+2. Render Dashboard에서 `New > Blueprint`를 선택합니다.
+3. GitHub의 `Riverwon2/DAMO` 저장소를 연결합니다.
+4. 테스트 중에는 `codex/add-development-docs`, PR 병합 후에는 `main` 브랜치를 선택합니다.
+5. Blueprint Path가 `render.yaml`인지 확인합니다.
+6. 생성될 서비스와 요금제를 확인한 뒤 `Deploy Blueprint`를 선택합니다.
+7. 배포가 끝나면 Render가 발급한 `https://...onrender.com` 주소를 모바일 브라우저에서 엽니다.
+
+실제 네이버 지도를 사용할 때는 Render 서비스의 Environment에 `VITE_NAVER_MAP_CLIENT_ID`를 추가하고 다시 빌드합니다. 네이버 클라우드 Maps Application의 Web 서비스 URL에도 Render에서 발급된 호스트 주소를 등록해야 합니다.
+
+통합 배포를 로컬에서 미리 확인하려면 다음 순서로 실행합니다.
+
+```bash
+pnpm build:render
+```
+
+Windows PowerShell:
+
+```powershell
+$env:DAMO_SERVE_WEB = "true"
+$env:DAMO_HOST = "127.0.0.1"
+$env:PORT = "4010"
+pnpm start
+```
+
+macOS 또는 Linux:
+
+```bash
+DAMO_SERVE_WEB=true DAMO_HOST=127.0.0.1 PORT=4010 pnpm start
+```
+
+이 모드에서는 웹과 API를 모두 `http://127.0.0.1:4010`에서 확인합니다. 목 데이터는 Render 인스턴스가 재시작되거나 새 버전이 배포될 때 초기화됩니다.

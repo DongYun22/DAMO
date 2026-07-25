@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: damo-preview
+    runtime: node
+    plan: free
+    region: singapore
+    buildCommand: corepack enable && pnpm install --frozen-lockfile --prod=false && pnpm build:render
+    startCommand: pnpm start
+    healthCheckPath: /health
+    autoDeployTrigger: commit
+    renderSubdomainPolicy: enabled
+    envVars:
+      - key: DAMO_HOST
+        value: 0.0.0.0
+      - key: DAMO_SERVE_WEB
+        value: "true"

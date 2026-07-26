@@ -24,6 +24,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState
 } from "react";
 import type {
@@ -380,18 +381,24 @@ export function MapPage() {
   const [unregisterOpen, setUnregisterOpen] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
+  const [suggestions, setSuggestions] = useState<Place[]>([]);
+  const [suggestionsOpen, setSuggestionsOpen] = useState(false);
+  const [suggestionsLoading, setSuggestionsLoading] = useState(false);
+  const [suggestionsError, setSuggestionsError] = useState(false);
+  const suggestionCache = useRef(new Map<string, Place[]>());
 
   const loadSaved = useCallback(async () => {
     setSaved(await api<UserPlace[]>("/me/places"));
   }, []);
 
-  const search = useCallback(async () => {
+  const search = useCallback(async (searchQuery = query) => {
     setLoading(true);
     setError("");
     try {
       const result = await api<Place[]>(
-        `/map/places/search?query=${encodeURIComponent(query)}`
+        `/map/places/search?query=${encodeURIComponent(searchQuery.trim())}`
       );
+      suggestionCache.current.set(searchQuery.trim().toLowerCase(), result);
       setPlaces(result);
       setSelected((current) =>
         current && result.some((place) => place.id === current.id)
@@ -409,8 +416,61 @@ export function MapPage() {
     void Promise.all([search(), loadSaved()]);
   }, []); // initial local prototype load
 
+  useEffect(() => {
+    const normalized = query.trim();
+    if (!suggestionsOpen || normalized.length < 2) {
+      setSuggestions([]);
+      setSuggestionsLoading(false);
+      setSuggestionsError(false);
+      return;
+    }
+
+    const cacheKey = normalized.toLowerCase();
+    const cached = suggestionCache.current.get(cacheKey);
+    if (cached) {
+      setSuggestions(cached);
+      setSuggestionsLoading(false);
+      setSuggestionsError(false);
+      return;
+    }
+
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      setSuggestionsLoading(true);
+      setSuggestionsError(false);
+      void api<Place[]>(
+        `/map/places/search?query=${encodeURIComponent(normalized)}`,
+        { signal: controller.signal }
+      )
+        .then((result) => {
+          suggestionCache.current.set(cacheKey, result);
+          setSuggestions(result);
+        })
+        .catch((reason: unknown) => {
+          if (!(reason instanceof DOMException && reason.name === "AbortError")) {
+            setSuggestions([]);
+            setSuggestionsError(true);
+          }
+        })
+        .finally(() => setSuggestionsLoading(false));
+    }, 350);
+
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [query, suggestionsOpen]);
+
+  const selectSuggestion = (place: Place) => {
+    setQuery(place.name);
+    setPlaces(suggestions);
+    setSelected(place);
+    setSuggestionsOpen(false);
+    setError("");
+  };
+
   const selectedSaved = selected
-    ? saved.find((item) => item.place.id === selected.id)
+    ? saved.find((item) => item.place.naverPlaceId === selected.naverPlaceId)
     : undefined;
 
   const register = async () => {
@@ -451,7 +511,17 @@ export function MapPage() {
   return (
     <div className="page page--map">
       <ScreenHeader title="장소 탐색" description="역 주변에서 관심 장소를 찾아보세요." back={false} />
-      <SearchInput value={query} onChange={setQuery} onSubmit={() => void search()} />
+      <SearchInput
+        value={query}
+        onChange={setQuery}
+        onSubmit={() => void search()}
+        suggestions={suggestions}
+        suggestionsOpen={suggestionsOpen}
+        suggestionsLoading={suggestionsLoading}
+        suggestionsError={suggestionsError}
+        onSuggestionsOpenChange={setSuggestionsOpen}
+        onSuggestionSelect={selectSuggestion}
+      />
       <InlineError message={error} />
       {loading ? (
         <Loading label="주변 장소 검색 중" />

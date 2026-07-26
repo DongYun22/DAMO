@@ -438,10 +438,37 @@ type NaverWindow = Window & {
       Map: new (element: HTMLElement, options: Record<string, unknown>) => unknown;
       LatLng: new (lat: number, lng: number) => unknown;
       Marker: new (options: Record<string, unknown>) => unknown;
+      InfoWindow: new (options: Record<string, unknown>) => {
+        close: () => void;
+        open: (map: unknown, anchor: unknown) => void;
+        setContent: (content: string) => void;
+      };
       Event: { addListener: (target: unknown, event: string, callback: () => void) => void };
     };
   };
 };
+
+const escapeMapText = (value: string) =>
+  value.replace(
+    /[&<>"']/g,
+    (character) =>
+      ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;"
+      })[character] ?? character
+  );
+
+const mapInfoContent = (place: Place) => `
+  <article class="naver-info-window">
+    <strong>${escapeMapText(place.name)}</strong>
+    <span>${escapeMapText(place.category)}</span>
+    <p>${escapeMapText(place.roadAddress || place.address)}</p>
+    <small>아래에서 상세정보와 저장 여부를 확인하세요.</small>
+  </article>
+`;
 
 export function MapCanvas({
   places,
@@ -475,6 +502,14 @@ export function MapCanvas({
           center: new naver.maps.LatLng(center.latitude, center.longitude),
           zoom: 14
         });
+        const infoWindow = new naver.maps.InfoWindow({
+          content: mapInfoContent(center),
+          borderWidth: 0,
+          backgroundColor: "transparent",
+          disableAnchor: true,
+          maxWidth: 240
+        });
+        let selectedMarker: unknown;
         for (const place of places) {
           const marker = new naver.maps.Marker({
             map,
@@ -482,8 +517,15 @@ export function MapCanvas({
             title: place.name,
             zIndex: selectedId === place.id ? 100 : 1
           });
-          naver.maps.Event.addListener(marker, "click", () => onSelect?.(place));
+          if (selectedId === place.id) selectedMarker = marker;
+          naver.maps.Event.addListener(marker, "click", () => {
+            infoWindow.setContent(mapInfoContent(place));
+            infoWindow.open(map, marker);
+            onSelect?.(place);
+          });
         }
+        if (selectedMarker) infoWindow.open(map, selectedMarker);
+        naver.maps.Event.addListener(map, "click", () => infoWindow.close());
         setMapLoadFailed(false);
       } catch {
         setMapLoadFailed(true);
@@ -567,30 +609,89 @@ export function SearchInput({
   value,
   onChange,
   onSubmit,
+  suggestions = [],
+  suggestionsOpen = false,
+  suggestionsLoading = false,
+  suggestionsError = false,
+  onSuggestionsOpenChange,
+  onSuggestionSelect,
   placeholder = "역 이름 또는 장소 검색"
 }: {
   value: string;
   onChange: (value: string) => void;
   onSubmit: () => void;
+  suggestions?: Place[];
+  suggestionsOpen?: boolean;
+  suggestionsLoading?: boolean;
+  suggestionsError?: boolean;
+  onSuggestionsOpenChange?: (open: boolean) => void;
+  onSuggestionSelect?: (place: Place) => void;
   placeholder?: string;
 }) {
+  const suggestionsId = useId();
   return (
-    <form
-      className="search-input"
-      onSubmit={(event) => {
-        event.preventDefault();
-        onSubmit();
+    <div
+      className="search-combobox"
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+          onSuggestionsOpenChange?.(false);
+        }
       }}
     >
-      <Search size={20} />
-      <input
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        placeholder={placeholder}
-        aria-label={placeholder}
-      />
-      <button type="submit">검색</button>
-    </form>
+      <form
+        className="search-input"
+        role="search"
+        onSubmit={(event) => {
+          event.preventDefault();
+          onSuggestionsOpenChange?.(false);
+          onSubmit();
+        }}
+      >
+        <Search size={20} />
+        <input
+          value={value}
+          onChange={(event) => {
+            onChange(event.target.value);
+            onSuggestionsOpenChange?.(true);
+          }}
+          onFocus={() => onSuggestionsOpenChange?.(true)}
+          placeholder={placeholder}
+          aria-label={placeholder}
+          aria-autocomplete="list"
+          aria-controls={suggestionsId}
+          aria-expanded={suggestionsOpen}
+          role="combobox"
+        />
+        <button type="submit">검색</button>
+      </form>
+      {suggestionsOpen && value.trim().length >= 2 ? (
+        <div className="search-suggestions" id={suggestionsId} role="listbox">
+          {suggestionsLoading ? (
+            <p className="search-suggestions__status">장소를 찾고 있어요.</p>
+          ) : suggestionsError ? (
+            <p className="search-suggestions__status">미리보기를 불러오지 못했어요.</p>
+          ) : suggestions.length ? (
+            suggestions.map((place) => (
+              <button
+                key={place.id}
+                type="button"
+                role="option"
+                aria-selected={false}
+                onClick={() => onSuggestionSelect?.(place)}
+              >
+                <MapPin size={17} />
+                <span>
+                  <strong>{place.name}</strong>
+                  <small>{place.category} · {place.roadAddress || place.address}</small>
+                </span>
+              </button>
+            ))
+          ) : (
+            <p className="search-suggestions__status">일치하는 장소가 없어요.</p>
+          )}
+        </div>
+      ) : null}
+    </div>
   );
 }
 

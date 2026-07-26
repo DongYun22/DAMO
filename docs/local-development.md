@@ -4,7 +4,7 @@ DAMO 프로토타입은 모바일 웹 프론트엔드와 메모리 기반 목 AP
 
 ## 1. 준비 사항
 
-- Node.js 20 이상
+- Node.js 20.12 이상
 - pnpm 11 이상
 
 프로젝트 루트에서 의존성을 설치합니다.
@@ -43,16 +43,29 @@ pnpm dev
 
 ## 4. 지도 설정
 
-지도 키를 설정하지 않으면 샘플 장소가 표시되는 로컬 목 지도를 사용합니다. 따라서 기능 확인에는 별도 토큰이 필요하지 않습니다.
+지도 키를 설정하지 않으면 샘플 장소가 표시되는 로컬 목 지도를 사용합니다. 따라서 기본 기능 확인에는 별도 토큰이 필요하지 않습니다.
 
-실제 네이버 지도를 확인하려면 `apps/web/.env.example`을 `apps/web/.env.local`로 복사한 뒤 값을 입력합니다.
+실제 네이버 지도와 장소 검색에는 용도가 다른 두 애플리케이션의 인증 정보가 필요합니다.
 
-```env
-VITE_API_URL=http://127.0.0.1:4010/api/v1
-VITE_NAVER_MAP_CLIENT_ID=네이버_지도_클라이언트_ID
-```
+1. 네이버 클라우드 플랫폼 Maps Application에서 `Dynamic Map`을 선택하고 Client ID를 발급합니다.
+2. `apps/web/.env.example`을 `apps/web/.env.local`로 복사해 지도 Client ID를 입력합니다.
 
-`VITE_NAVER_MAP_CLIENT_ID`에는 Access Token이 아니라 네이버 클라우드 플랫폼의 지도용 Client ID를 입력합니다. 환경변수를 바꾼 뒤에는 개발 서버를 다시 시작해야 합니다.
+   ```env
+   VITE_API_URL=/api/v1
+   VITE_NAVER_MAP_CLIENT_ID=네이버_클라우드_지도_Client_ID
+   ```
+
+3. 네이버 Developers에서 애플리케이션을 만들고 `검색` API 사용 권한을 추가합니다.
+4. `apps/mock-api/.env.example`을 `apps/mock-api/.env.local`로 복사해 검색 API 인증 정보를 입력합니다.
+
+   ```env
+   NAVER_SEARCH_CLIENT_ID=네이버_검색_API_Client_ID
+   NAVER_SEARCH_CLIENT_SECRET=네이버_검색_API_Client_Secret
+   ```
+
+`VITE_NAVER_MAP_CLIENT_ID`는 브라우저에서 지도를 그리는 공개용 식별자입니다. `NAVER_SEARCH_CLIENT_SECRET`은 서버에서만 사용되며 `VITE_` 접두사를 붙이거나 프론트엔드 파일에 입력하면 안 됩니다. 환경변수를 바꾼 뒤에는 개발 서버를 다시 시작해야 합니다.
+
+지도 화면에서 검색하면 서버가 네이버 지역 검색 API의 결과를 최대 5개 받아 지도 마커로 표시합니다. 결과를 선택해 목적과 성격을 저장하면 즉시 `내 장소` 화면에 반영됩니다. 검색 API 키가 없으면 기존 샘플 장소 검색으로 자동 전환됩니다.
 
 ## 5. 샘플 데이터 초기화
 
@@ -91,12 +104,12 @@ pnpm build
 1. 변경사항을 GitHub에 푸시합니다.
 2. Render Dashboard에서 `New > Blueprint`를 선택합니다.
 3. GitHub의 `Riverwon2/DAMO` 저장소를 연결합니다.
-4. 테스트 중에는 `codex/add-development-docs`, PR 병합 후에는 `main` 브랜치를 선택합니다.
+4. 테스트 중에는 배포하려는 기능 브랜치, PR 병합 후에는 `main` 브랜치를 선택합니다.
 5. Blueprint Path가 `render.yaml`인지 확인합니다.
 6. 생성될 서비스와 요금제를 확인한 뒤 `Deploy Blueprint`를 선택합니다.
 7. 배포가 끝나면 Render가 발급한 `https://...onrender.com` 주소를 모바일 브라우저에서 엽니다.
 
-실제 네이버 지도를 사용할 때는 Render 서비스의 Environment에 `VITE_NAVER_MAP_CLIENT_ID`를 추가하고 다시 빌드합니다. 네이버 클라우드 Maps Application의 Web 서비스 URL에도 Render에서 발급된 호스트 주소를 등록해야 합니다.
+Blueprint 생성 중 `VITE_NAVER_MAP_CLIENT_ID`, `NAVER_SEARCH_CLIENT_ID`, `NAVER_SEARCH_CLIENT_SECRET`을 입력합니다. 네이버 클라우드 Maps Application의 Web 서비스 URL에도 Render에서 발급된 호스트 주소를 등록해야 합니다. 검색 API Client Secret은 Render 환경 변수에만 저장합니다.
 
 통합 배포를 로컬에서 미리 확인하려면 다음 순서로 실행합니다.
 

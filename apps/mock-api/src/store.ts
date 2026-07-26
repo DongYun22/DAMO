@@ -103,7 +103,7 @@ export class StoreError extends Error {
 const iso = (value: string) => new Date(value).toISOString();
 const now = () => new Date().toISOString();
 
-const places: Place[] = [
+const seedPlaces: Place[] = [
   {
     id: "place-1",
     naverPlaceId: "naver-101",
@@ -212,6 +212,7 @@ const seedUsers: UserRecord[] = [
 ];
 
 export class MockStore {
+  places: Place[] = [];
   users: UserRecord[] = [];
   tokens = new Map<string, string>();
   userPlaces: UserPlace[] = [];
@@ -226,6 +227,7 @@ export class MockStore {
   }
 
   reset() {
+    this.places = structuredClone(seedPlaces);
     this.users = structuredClone(seedUsers);
     this.tokens = new Map([
       ["mock-token-user-1", "user-1"],
@@ -481,7 +483,7 @@ export class MockStore {
   }
 
   getPlace(id: string): Place {
-    const place = places.find((item) => item.id === id || item.naverPlaceId === id);
+    const place = this.places.find((item) => item.id === id || item.naverPlaceId === id);
     if (!place) throw new StoreError(404, "PLACE_NOT_FOUND", "장소를 찾을 수 없습니다.");
     return structuredClone(place);
   }
@@ -530,15 +532,26 @@ export class MockStore {
 
   searchPlaces(query: string): Place[] {
     const normalized = query.trim().toLowerCase();
-    if (!normalized) return structuredClone(places);
+    if (!normalized) return structuredClone(this.places);
     return structuredClone(
-      places.filter((place) =>
+      this.places.filter((place) =>
         [place.name, place.station, place.category, place.address, place.roadAddress]
           .join(" ")
           .toLowerCase()
           .includes(normalized.replace(/역$/, ""))
       )
     );
+  }
+
+  upsertPlaces(items: Place[]): Place[] {
+    for (const item of items) {
+      const index = this.places.findIndex(
+        (place) => place.naverPlaceId === item.naverPlaceId
+      );
+      if (index >= 0) this.places[index] = structuredClone(item);
+      else this.places.push(structuredClone(item));
+    }
+    return structuredClone(items);
   }
 
   listUserPlaces(userId: string): UserPlace[] {

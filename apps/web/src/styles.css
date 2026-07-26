@@ -27,6 +27,14 @@
   --red: #e14343;
   --shadow-soft: 0 8px 28px rgba(21, 49, 71, 0.08);
   --shadow-float: 0 12px 36px rgba(21, 49, 71, 0.16);
+  --glass-surface: rgba(255, 255, 255, 0.58);
+  --glass-surface-strong: rgba(255, 255, 255, 0.74);
+  --glass-surface-soft: rgba(249, 248, 247, 0.42);
+  --glass-border: rgba(255, 255, 255, 0.7);
+  --glass-line: rgba(21, 49, 71, 0.1);
+  --glass-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.72);
+  --glass-shadow: 0 16px 40px rgba(21, 49, 71, 0.11);
+  --glass-shadow-float: 0 20px 52px rgba(21, 49, 71, 0.17);
   --radius-xl: 28px;
   --radius-lg: 22px;
   --radius-md: 16px;
@@ -2450,6 +2458,377 @@ button.candidate-row {
 
   .profile-button span {
     display: none;
+  }
+}
+
+/* Glassmorphism theme */
+
+html,
+body {
+  background:
+    radial-gradient(circle at 12% 8%, rgba(173, 184, 187, 0.64), transparent 34%),
+    radial-gradient(circle at 90% 28%, rgba(210, 225, 226, 0.82), transparent 36%),
+    radial-gradient(circle at 45% 92%, rgba(237, 234, 228, 0.92), transparent 42%),
+    linear-gradient(145deg, #dfe7e9 0%, #f3f0eb 47%, #d8e5e7 100%);
+  background-attachment: fixed;
+}
+
+.app-shell {
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  background:
+    linear-gradient(155deg, rgba(249, 248, 247, 0.7), rgba(237, 234, 228, 0.48));
+  box-shadow:
+    0 0 0 1px rgba(21, 49, 71, 0.03),
+    0 28px 80px rgba(21, 49, 71, 0.12);
+}
+
+.app-main,
+.center-page,
+.auth-page {
+  background: transparent;
+}
+
+.screen-header {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.56);
+  background: rgba(249, 248, 247, 0.54);
+  box-shadow: 0 10px 30px rgba(21, 49, 71, 0.04);
+  backdrop-filter: blur(26px) saturate(132%);
+  -webkit-backdrop-filter: blur(26px) saturate(132%);
+}
+
+.bottom-nav,
+.home-actions,
+.sticky-page-action {
+  border: 1px solid var(--glass-border);
+  background: rgba(249, 248, 247, 0.66);
+  box-shadow:
+    var(--glass-highlight),
+    var(--glass-shadow-float);
+  backdrop-filter: blur(28px) saturate(140%);
+  -webkit-backdrop-filter: blur(28px) saturate(140%);
+}
+
+.bottom-nav {
+  bottom: calc(10px + var(--safe-bottom));
+  width: min(calc(100% - 24px), 496px);
+  min-height: 66px;
+  padding: 6px 14px;
+  border-radius: 24px;
+}
+
+.bottom-nav a {
+  min-height: 52px;
+}
+
+.bottom-nav a.active {
+  background: rgba(255, 255, 255, 0.4);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.44);
+}
+
+.home-actions,
+.sticky-page-action {
+  bottom: calc(88px + var(--safe-bottom));
+}
+
+.icon-button,
+.profile-action,
+.modal-sheet__close,
+.member-row button {
+  border: 1px solid rgba(255, 255, 255, 0.58);
+  background: rgba(255, 255, 255, 0.34);
+  box-shadow: var(--glass-highlight);
+}
+
+.icon-button:hover,
+.profile-action:hover,
+.modal-sheet__close:hover,
+.member-row button:hover {
+  background: rgba(255, 255, 255, 0.58);
+}
+
+.button--primary {
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: linear-gradient(145deg, #153147, #294b61);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    0 12px 26px rgba(21, 49, 71, 0.2);
+}
+
+.button--primary:hover {
+  background: linear-gradient(145deg, #1b3c54, #232a2f);
+}
+
+.button--secondary,
+.button--danger-text {
+  border: 1px solid var(--glass-border);
+  background: rgba(255, 255, 255, 0.44);
+  box-shadow: var(--glass-highlight);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+
+.button--secondary:hover {
+  background: rgba(255, 255, 255, 0.64);
+}
+
+.summary-banner,
+.meeting-card,
+.empty-state,
+.form-card,
+.join-code-card,
+.join-preview,
+.place-detail-card,
+.map-result-card,
+.candidate-row,
+.meeting-hero,
+.member-list,
+.result-status-card,
+.scores-locked,
+.vote-choice {
+  border: 1px solid var(--glass-border);
+  background: var(--glass-surface);
+  box-shadow:
+    var(--glass-highlight),
+    var(--glass-shadow);
+  backdrop-filter: blur(18px) saturate(124%);
+  -webkit-backdrop-filter: blur(18px) saturate(124%);
+}
+
+.summary-banner {
+  background: rgba(249, 248, 247, 0.5);
+}
+
+.summary-banner--alert,
+.meeting-card--alert {
+  border-color: rgba(255, 127, 168, 0.46);
+  background: rgba(255, 240, 245, 0.64);
+}
+
+.meeting-card__tags span,
+.meeting-hero__tags span,
+.match-reasons span,
+.me-label,
+.recommend-count,
+.ranking-row__rank,
+.selection-summary,
+.invite-code {
+  border: 1px solid rgba(255, 255, 255, 0.48);
+  background: rgba(237, 234, 228, 0.5);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.48);
+}
+
+.meeting-card__bottom,
+.member-row + .member-row {
+  border-color: var(--glass-line);
+}
+
+.meeting-section--completed {
+  opacity: 0.58;
+}
+
+.modal-backdrop {
+  background: rgba(21, 49, 71, 0.28);
+  backdrop-filter: blur(12px) saturate(112%);
+  -webkit-backdrop-filter: blur(12px) saturate(112%);
+}
+
+.modal-sheet {
+  border: 1px solid var(--glass-border);
+  background: rgba(249, 248, 247, 0.78);
+  box-shadow:
+    var(--glass-highlight),
+    0 30px 90px rgba(21, 49, 71, 0.24);
+  backdrop-filter: blur(32px) saturate(138%);
+  -webkit-backdrop-filter: blur(32px) saturate(138%);
+}
+
+.toast {
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(35, 42, 47, 0.82);
+  backdrop-filter: blur(20px) saturate(120%);
+  -webkit-backdrop-filter: blur(20px) saturate(120%);
+}
+
+.search-input,
+.search-suggestions {
+  border-color: var(--glass-border);
+  background: var(--glass-surface-strong);
+  box-shadow:
+    var(--glass-highlight),
+    var(--glass-shadow);
+  backdrop-filter: blur(24px) saturate(130%);
+  -webkit-backdrop-filter: blur(24px) saturate(130%);
+}
+
+.search-input input,
+.search-input button {
+  background: transparent;
+}
+
+.naver-info-window,
+.map-canvas__station,
+.map-canvas__mode {
+  border: 1px solid var(--glass-border);
+  background: rgba(255, 255, 255, 0.72);
+  box-shadow:
+    var(--glass-highlight),
+    0 14px 34px rgba(21, 49, 71, 0.16);
+  backdrop-filter: blur(18px) saturate(126%);
+  -webkit-backdrop-filter: blur(18px) saturate(126%);
+}
+
+.map-canvas {
+  border-color: rgba(255, 255, 255, 0.72);
+  box-shadow:
+    0 0 0 1px rgba(21, 49, 71, 0.06),
+    0 18px 40px rgba(21, 49, 71, 0.12);
+}
+
+.map-result-card.is-selected,
+.candidate-row.is-selected {
+  border-color: rgba(21, 49, 71, 0.36);
+  background: rgba(237, 234, 228, 0.68);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.74),
+    0 14px 34px rgba(21, 49, 71, 0.13);
+}
+
+.place-thumbnail,
+.empty-state__icon,
+.profile-sheet__avatar,
+.member-row__avatar,
+.vote-choice__letter {
+  border: 1px solid rgba(255, 255, 255, 0.6);
+  background: rgba(237, 234, 228, 0.58);
+  box-shadow: var(--glass-highlight);
+}
+
+.saved-place-item {
+  border-color: var(--glass-border);
+  background: rgba(237, 234, 228, 0.48);
+  box-shadow: var(--glass-shadow);
+}
+
+.saved-place-item__main,
+.saved-place-item__actions button {
+  background: rgba(255, 255, 255, 0.5);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+
+.chip-group button,
+.capacity-field button,
+.invite-code button,
+.segmented {
+  border: 1px solid var(--glass-border);
+  background: rgba(255, 255, 255, 0.36);
+  box-shadow: var(--glass-highlight);
+}
+
+.chip-group button.is-selected,
+.segmented button.is-active {
+  border-color: rgba(21, 49, 71, 0.24);
+  background: rgba(255, 255, 255, 0.7);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.82),
+    0 7px 18px rgba(21, 49, 71, 0.09);
+}
+
+.field input,
+.time-grid select,
+.input-with-icon,
+.join-code-card > input,
+.auth-form input {
+  border-color: rgba(255, 255, 255, 0.66);
+  background: rgba(255, 255, 255, 0.42);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.66),
+    inset 0 0 0 1px rgba(21, 49, 71, 0.04);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+.field input:focus,
+.time-grid select:focus,
+.join-code-card > input:focus,
+.auth-form input:focus {
+  border-color: rgba(21, 49, 71, 0.38);
+  background: rgba(255, 255, 255, 0.64);
+}
+
+.winner-card {
+  border: 1px solid rgba(255, 214, 162, 0.7);
+  background: rgba(255, 250, 242, 0.68);
+  box-shadow:
+    var(--glass-highlight),
+    var(--glass-shadow);
+  backdrop-filter: blur(18px) saturate(122%);
+  -webkit-backdrop-filter: blur(18px) saturate(122%);
+}
+
+.vote-choice.is-selected {
+  border-color: rgba(255, 79, 135, 0.6);
+  background: rgba(255, 240, 245, 0.7);
+}
+
+.danger-box,
+.inline-error {
+  border: 1px solid rgba(225, 67, 67, 0.16);
+  background: rgba(255, 242, 243, 0.62);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+
+.auth-page {
+  background:
+    radial-gradient(circle at 78% 10%, rgba(173, 184, 187, 0.5), transparent 36%),
+    radial-gradient(circle at 10% 78%, rgba(21, 49, 71, 0.16), transparent 42%);
+}
+
+.auth-page__ambient {
+  opacity: 0.2;
+  filter: blur(90px);
+}
+
+.auth-card {
+  align-self: center;
+  padding: 24px;
+  border: 1px solid var(--glass-border);
+  border-radius: 30px;
+  background: rgba(249, 248, 247, 0.58);
+  box-shadow:
+    var(--glass-highlight),
+    var(--glass-shadow-float);
+  backdrop-filter: blur(28px) saturate(132%);
+  -webkit-backdrop-filter: blur(28px) saturate(132%);
+}
+
+.oauth-button--google {
+  border-color: var(--glass-border);
+  background: rgba(255, 255, 255, 0.5);
+  box-shadow: var(--glass-highlight);
+}
+
+@media (hover: hover) {
+  .meeting-card:hover,
+  .map-result-card:hover,
+  .candidate-row:hover,
+  .vote-choice:hover {
+    border-color: rgba(21, 49, 71, 0.2);
+    transform: translateY(-1px);
+  }
+}
+
+@media (min-width: 700px) {
+  .bottom-nav {
+    bottom: 34px;
+    width: 496px;
+    border-radius: 24px;
+  }
+
+  .home-actions,
+  .sticky-page-action {
+    bottom: calc(112px + var(--safe-bottom));
   }
 }
 

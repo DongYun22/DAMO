@@ -386,6 +386,7 @@ export function MapPage() {
   const [suggestionsLoading, setSuggestionsLoading] = useState(false);
   const [suggestionsError, setSuggestionsError] = useState(false);
   const suggestionCache = useRef(new Map<string, Place[]>());
+  const resultCarouselRef = useRef<HTMLUListElement>(null);
 
   const loadSaved = useCallback(async () => {
     setSaved(await api<UserPlace[]>("/me/places"));
@@ -469,6 +470,18 @@ export function MapPage() {
     setError("");
   };
 
+  useEffect(() => {
+    if (!selected || !resultCarouselRef.current) return;
+    const selectedCard = Array.from(
+      resultCarouselRef.current.querySelectorAll<HTMLButtonElement>("[data-place-id]")
+    ).find((card) => card.dataset.placeId === selected.id);
+    selectedCard?.scrollIntoView({
+      behavior: "smooth",
+      block: "nearest",
+      inline: "center"
+    });
+  }, [selected]);
+
   const selectedSaved = selected
     ? saved.find((item) => item.place.naverPlaceId === selected.naverPlaceId)
     : undefined;
@@ -532,18 +545,34 @@ export function MapPage() {
             selectedId={selected?.id}
             onSelect={setSelected}
           />
-          <div className="map-result-strip" aria-label="검색된 장소">
-            {places.map((place) => (
-              <button
-                type="button"
-                key={place.id}
-                className={selected?.id === place.id ? "is-selected" : ""}
-                onClick={() => setSelected(place)}
-              >
-                {place.name}
-              </button>
-            ))}
-          </div>
+          {places.length ? (
+            <section className="map-results" aria-label="검색된 장소">
+              <div className="map-results__heading">
+                <strong>검색 결과 {places.length}</strong>
+                <span>좌우로 넘겨보세요</span>
+              </div>
+              <ul className="map-result-carousel" ref={resultCarouselRef}>
+                {places.map((place) => (
+                  <li key={place.id}>
+                    <button
+                      type="button"
+                      className={`map-result-card ${selected?.id === place.id ? "is-selected" : ""}`}
+                      data-place-id={place.id}
+                      aria-pressed={selected?.id === place.id}
+                      onClick={() => setSelected(place)}
+                    >
+                      <PlaceThumbnail place={place} />
+                      <span className="map-result-card__body">
+                        <strong>{place.name}</strong>
+                        <small>{place.category}</small>
+                        <span>{place.roadAddress || place.address}</span>
+                      </span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          ) : null}
           {selected ? (
             <section className="place-detail-card">
               <PlaceThumbnail place={selected} large />
@@ -918,7 +947,7 @@ export function JoinMeetingPage() {
   const { user } = useAuth();
   const { refreshHome } = useShell();
   const navigate = useNavigate();
-  const [joinCode, setJoinCode] = useState("4821");
+  const [joinCode, setJoinCode] = useState("");
   const [meeting, setMeeting] = useState<LookupMeeting | null>(null);
   const [nickname, setNickname] = useState(user?.nickname ?? "");
   const [error, setError] = useState("");
@@ -978,6 +1007,8 @@ export function JoinMeetingPage() {
           inputMode="numeric"
           pattern="\d{4}"
           maxLength={4}
+          placeholder="_ _ _ _"
+          autoComplete="one-time-code"
           aria-label="4자리 가입 코드"
         />
         <PrimaryButton type="submit" disabled={loading || joinCode.length !== 4}>

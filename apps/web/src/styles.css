@@ -1135,35 +1135,102 @@ select {
   transform: rotate(45deg);
 }
 
-.map-result-strip {
-  display: flex;
-  gap: 7px;
-  margin: 0 -20px;
-  padding: 2px 20px 10px;
-  overflow-x: auto;
-  scrollbar-width: none;
+.map-results {
+  margin-top: 2px;
 }
 
-.map-result-strip::-webkit-scrollbar {
+.map-results__heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.map-results__heading strong {
+  font-size: 14px;
+}
+
+.map-results__heading span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.map-result-carousel {
+  display: grid;
+  grid-auto-columns: minmax(260px, calc(100% - 42px));
+  grid-auto-flow: column;
+  gap: 10px;
+  margin: 0 -20px;
+  padding: 2px 20px 12px;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  scroll-padding-inline: 20px;
+  scroll-snap-type: inline mandatory;
+  scrollbar-width: none;
+  list-style: none;
+  -webkit-overflow-scrolling: touch;
+}
+
+.map-result-carousel::-webkit-scrollbar {
   display: none;
 }
 
-.map-result-strip button {
-  flex: 0 0 auto;
-  min-height: 38px;
-  padding: 0 13px;
+.map-result-carousel li {
+  min-width: 0;
+  scroll-snap-align: center;
+}
+
+.map-result-card {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 90px;
+  padding: 12px;
   border: 1px solid var(--line);
-  border-radius: 999px;
-  color: var(--ink-soft);
+  border-radius: 20px;
+  color: var(--ink);
   background: white;
-  font-size: 12px;
+  box-shadow: var(--shadow-soft);
+  text-align: left;
+}
+
+.map-result-card.is-selected {
+  border-color: var(--primary);
+  background: var(--primary-soft);
+  box-shadow: 0 0 0 2px rgba(21, 49, 71, 0.08);
+}
+
+.map-result-card__body {
+  min-width: 0;
+}
+
+.map-result-card__body strong,
+.map-result-card__body small,
+.map-result-card__body > span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.map-result-card__body strong {
+  font-size: 14px;
+}
+
+.map-result-card__body small {
+  margin-top: 4px;
+  color: var(--primary);
+  font-size: 11px;
   font-weight: 800;
 }
 
-.map-result-strip button.is-selected {
-  border-color: var(--ink);
-  color: white;
-  background: var(--ink);
+.map-result-card__body > span {
+  margin-top: 7px;
+  color: var(--ink-soft);
+  font-size: 11px;
 }
 
 .place-detail-card {

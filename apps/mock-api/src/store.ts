@@ -18,12 +18,12 @@ import type {
   VoteStatus
 } from "@damo/contracts";
 
-interface UserRecord extends User {
+export interface UserRecord extends User {
   loginId: string;
   password: string;
 }
 
-interface MeetingRecord {
+export interface MeetingRecord {
   id: string;
   name: string;
   hostUserId: string;
@@ -39,18 +39,18 @@ interface MeetingRecord {
   deletedAt: string | null;
 }
 
-interface MemberRecord extends MeetingMember {
+export interface MemberRecord extends MeetingMember {
   meetingId: string;
 }
 
-interface RecommendationRecord {
+export interface RecommendationRecord {
   memberId: string;
   userPlaceId: string;
   purpose: Purpose;
   mood: Mood;
 }
 
-interface CandidateRecord {
+export interface CandidateRecord {
   id: string;
   meetingId: string;
   placeId: string;
@@ -58,7 +58,7 @@ interface CandidateRecord {
   recommendations: RecommendationRecord[];
 }
 
-interface ChoiceRecord {
+export interface ChoiceRecord {
   roundNumber: number;
   candidateAId: string;
   candidateBId: string;
@@ -66,7 +66,7 @@ interface ChoiceRecord {
   selectedAt: string;
 }
 
-interface VoteSessionRecord {
+export interface VoteSessionRecord {
   id: string;
   voteId: string;
   meetingId: string;
@@ -81,12 +81,24 @@ interface VoteSessionRecord {
   updatedAt: string;
 }
 
-interface VoteRecord {
+export interface VoteRecord {
   id: string;
   meetingId: string;
   status: VoteStatus;
   createdAt: string;
   closedAt: string | null;
+}
+
+export interface StoreSnapshot {
+  places: Place[];
+  users: UserRecord[];
+  tokens: Array<[string, string]>;
+  userPlaces: UserPlace[];
+  meetings: MeetingRecord[];
+  members: MemberRecord[];
+  candidates: CandidateRecord[];
+  votes: VoteRecord[];
+  sessions: VoteSessionRecord[];
 }
 
 export class StoreError extends Error {
@@ -383,6 +395,33 @@ export class MockStore {
         ]
       )
     ];
+  }
+
+  snapshot(): StoreSnapshot {
+    return structuredClone({
+      places: this.places,
+      users: this.users,
+      tokens: [...this.tokens.entries()],
+      userPlaces: this.userPlaces,
+      meetings: this.meetings,
+      members: this.members,
+      candidates: this.candidates,
+      votes: this.votes,
+      sessions: this.sessions
+    });
+  }
+
+  hydrate(snapshot: StoreSnapshot) {
+    const value = structuredClone(snapshot);
+    this.places = value.places;
+    this.users = value.users;
+    this.tokens = new Map(value.tokens);
+    this.userPlaces = value.userPlaces;
+    this.meetings = value.meetings;
+    this.members = value.members;
+    this.candidates = value.candidates;
+    this.votes = value.votes;
+    this.sessions = value.sessions;
   }
 
   private makeUserPlace(
@@ -1136,5 +1175,3 @@ export class MockStore {
     };
   }
 }
-
-export const store = new MockStore();

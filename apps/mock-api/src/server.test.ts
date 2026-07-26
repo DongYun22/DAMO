@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { after, before, describe, it } from "node:test";
 import type { AddressInfo } from "node:net";
+import type { Place } from "@damo/contracts";
 import { app } from "./server.js";
 import { store } from "./store.js";
 
@@ -79,6 +80,42 @@ describe("DAMO mock API", () => {
     });
     const anotherBody = await another.json();
     assert.notEqual(anotherBody.data.joinCode, body.data.joinCode);
+  });
+
+  it("registers a searched NAVER place and returns it from My Places", async () => {
+    store.reset();
+    const searchedPlace: Place = {
+      id: "place-naver-98765",
+      naverPlaceId: "naver-98765",
+      name: "테스트 네이버 카페",
+      category: "카페 · 디저트",
+      address: "서울특별시 성동구 성수동 2가",
+      roadAddress: "서울특별시 성동구 성수이로 20",
+      latitude: 37.544,
+      longitude: 127.056,
+      station: "성수역",
+      distanceText: "지도에서 위치 확인"
+    };
+    store.upsertPlaces([searchedPlace]);
+
+    const registered = await request("/api/v1/me/places", {
+      method: "POST",
+      body: JSON.stringify({
+        naverPlaceId: searchedPlace.naverPlaceId,
+        purpose: "CAFE",
+        mood: "QUIET"
+      })
+    });
+    assert.equal(registered.status, 201);
+
+    const list = await request("/api/v1/me/places");
+    const body = await list.json();
+    assert.equal(
+      body.data.some(
+        (item: { place: Place }) => item.place.naverPlaceId === searchedPlace.naverPlaceId
+      ),
+      true
+    );
   });
 
   it("runs the current user's N-1 vote and removes the alert", async () => {

@@ -17,7 +17,8 @@ import {
   type PropsWithChildren,
   useEffect,
   useId,
-  useRef
+  useRef,
+  useState
 } from "react";
 import { Link, NavLink, useNavigate } from "react-router-dom";
 import type {
@@ -454,6 +455,7 @@ export function MapCanvas({
   compact?: boolean;
 }) {
   const mapRef = useRef<HTMLDivElement>(null);
+  const [mapLoadFailed, setMapLoadFailed] = useState(false);
   const clientId = import.meta.env.VITE_NAVER_MAP_CLIENT_ID as string | undefined;
 
   useEffect(() => {
@@ -462,20 +464,33 @@ export function MapCanvas({
     const renderMap = () => {
       if (cancelled || !mapRef.current) return;
       const naver = (window as NaverWindow).naver;
-      if (!naver) return;
-      const center = places[0]!;
-      const map = new naver.maps.Map(mapRef.current, {
-        center: new naver.maps.LatLng(center.latitude, center.longitude),
-        zoom: 14
-      });
-      for (const place of places) {
-        const marker = new naver.maps.Marker({
-          map,
-          position: new naver.maps.LatLng(place.latitude, place.longitude),
-          title: place.name
-        });
-        naver.maps.Event.addListener(marker, "click", () => onSelect?.(place));
+      if (!naver) {
+        setMapLoadFailed(true);
+        return;
       }
+      try {
+        const center =
+          places.find((place) => place.id === selectedId) ?? places[0]!;
+        const map = new naver.maps.Map(mapRef.current, {
+          center: new naver.maps.LatLng(center.latitude, center.longitude),
+          zoom: 14
+        });
+        for (const place of places) {
+          const marker = new naver.maps.Marker({
+            map,
+            position: new naver.maps.LatLng(place.latitude, place.longitude),
+            title: place.name,
+            zIndex: selectedId === place.id ? 100 : 1
+          });
+          naver.maps.Event.addListener(marker, "click", () => onSelect?.(place));
+        }
+        setMapLoadFailed(false);
+      } catch {
+        setMapLoadFailed(true);
+      }
+    };
+    const handleScriptError = () => {
+      if (!cancelled) setMapLoadFailed(true);
     };
     const existing = document.querySelector<HTMLScriptElement>(
       "script[data-damo-naver-map]"
@@ -483,8 +498,10 @@ export function MapCanvas({
     if (existing) {
       if ((window as NaverWindow).naver) renderMap();
       else existing.addEventListener("load", renderMap, { once: true });
+      existing.addEventListener("error", handleScriptError, { once: true });
       return () => {
         cancelled = true;
+        existing.removeEventListener("error", handleScriptError);
       };
     }
     const script = document.createElement("script");
@@ -492,13 +509,15 @@ export function MapCanvas({
     script.src = `https://oapi.map.naver.com/openapi/v3/maps.js?ncpKeyId=${clientId}`;
     script.async = true;
     script.addEventListener("load", renderMap, { once: true });
+    script.addEventListener("error", handleScriptError, { once: true });
     document.head.append(script);
     return () => {
       cancelled = true;
+      script.removeEventListener("error", handleScriptError);
     };
-  }, [clientId, onSelect, places]);
+  }, [clientId, onSelect, places, selectedId]);
 
-  if (clientId) {
+  if (clientId && !mapLoadFailed) {
     return <div className={`map-canvas ${compact ? "map-canvas--compact" : ""}`} ref={mapRef} />;
   }
 
@@ -517,7 +536,9 @@ export function MapCanvas({
         <span />
         성수역
       </span>
-      <span className="map-canvas__mode">목 지도</span>
+      <span className="map-canvas__mode">
+        {clientId && mapLoadFailed ? "지도 연결 실패 · 목 지도" : "목 지도"}
+      </span>
       {places.map((place, index) => {
         const left =
           12 + ((place.longitude - minLng) / Math.max(maxLng - minLng, 0.001)) * 72;

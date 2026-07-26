@@ -14,3 +14,9 @@ services:
         value: 0.0.0.0
       - key: DAMO_SERVE_WEB
         value: "true"
+      - key: VITE_NAVER_MAP_CLIENT_ID
+        sync: false
+      - key: NAVER_SEARCH_CLIENT_ID
+        sync: false
+      - key: NAVER_SEARCH_CLIENT_SECRET
+        sync: false

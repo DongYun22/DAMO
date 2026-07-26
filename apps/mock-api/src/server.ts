@@ -10,6 +10,10 @@ import express, {
 } from "express";
 import { z, ZodError } from "zod";
 import type { Mood, Purpose } from "@damo/contracts";
+import {
+  naverSearchCredentials,
+  searchNaverLocalPlaces
+} from "./naver-search.js";
 import { store, StoreError } from "./store.js";
 
 declare global {
@@ -25,6 +29,8 @@ const moodSchema = z.enum(["FUN", "QUIET", "BUSINESS", "TIPSY"]);
 
 export const app = express();
 const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));
+const localEnvPath = path.resolve(moduleDirectory, "../.env.local");
+if (existsSync(localEnvPath)) process.loadEnvFile(localEnvPath);
 const webDistDirectory = path.resolve(moduleDirectory, "../../web/dist");
 const webIndexPath = path.join(webDistDirectory, "index.html");
 const servesWeb = process.env.DAMO_SERVE_WEB === "true";
@@ -139,8 +145,22 @@ app.get("/api/v1/me/home", auth, (req, res) => ok(res, store.home(req.userId!)))
 app.get(
   "/api/v1/map/places/search",
   auth,
-  asyncRoute((req, res) => {
-    const query = z.string().catch("").parse(req.query.query);
+  asyncRoute(async (req, res) => {
+    const query = z.string().trim().max(100).catch("").parse(req.query.query);
+    const credentials = naverSearchCredentials();
+    if (query && credentials) {
+      try {
+        const result = await searchNaverLocalPlaces(query, credentials);
+        return ok(res, store.upsertPlaces(result));
+      } catch (error) {
+        console.error("Naver local search failed", error);
+        throw new StoreError(
+          502,
+          "NAVER_PLACE_SEARCH_FAILED",
+          "네이버 장소 검색에 실패했습니다. 잠시 후 다시 시도해 주세요."
+        );
+      }
+    }
     return ok(res, store.searchPlaces(query));
   })
 );

@@ -1,6 +1,6 @@
 # DAMO 로컬 개발 가이드
 
-DAMO 프로토타입은 모바일 웹 프론트엔드와 메모리 기반 목 API 서버로 구성됩니다. 별도의 데이터베이스나 외부 지도 키가 없어도 전체 흐름을 실행할 수 있습니다.
+DAMO 프로토타입은 모바일 웹 프론트엔드와 Express API 서버로 구성됩니다. Supabase 연결 정보가 있으면 PostgreSQL에 영구 저장하고, 연결 정보가 없으면 임시 메모리 저장소로 실행됩니다.
 
 ## 1. 준비 사항
 
@@ -18,8 +18,11 @@ pnpm install
 프론트엔드와 목 API를 함께 실행합니다.
 
 ```bash
+pnpm db:setup
 pnpm dev
 ```
+
+`pnpm db:setup`은 처음 한 번 실행해 마이그레이션을 적용하고, 데이터베이스가 비어 있을 때만 샘플 데이터를 입력합니다.
 
 기본 접속 주소는 다음과 같습니다.
 
@@ -67,15 +70,19 @@ pnpm dev
 
 지도 화면에서 검색하면 서버가 네이버 지역 검색 API의 결과를 최대 5개 받아 지도 마커로 표시합니다. 결과를 선택해 목적과 성격을 저장하면 즉시 `내 장소` 화면에 반영됩니다. 검색 API 키가 없으면 기존 샘플 장소 검색으로 자동 전환됩니다.
 
-## 5. 샘플 데이터 초기화
+## 5. 샘플 데이터
 
-목 API의 데이터는 서버 메모리에만 저장됩니다. 서버를 재시작하거나 아래 요청을 보내면 최초 샘플 상태로 돌아갑니다.
+Supabase PostgreSQL을 사용하면 서버를 재시작해도 데이터가 유지됩니다. `pnpm db:seed`는 사용자 데이터가 하나도 없을 때만 샘플 데이터를 입력합니다.
+
+메모리 저장소를 사용할 때는 서버를 재시작하거나 아래 요청을 보내면 최초 샘플 상태로 돌아갑니다.
 
 ```bash
 curl -X POST http://127.0.0.1:4010/api/v1/__mock/reset
 ```
 
 초기 샘플에는 후보 선택 중인 모임, 투표 중인 모임, 완료된 모임이 각각 포함되어 있습니다. 가입 화면을 확인할 때는 코드 `4821`을 사용할 수 있습니다.
+
+PostgreSQL 환경에서는 데이터 유실을 방지하기 위해 `/api/v1/__mock/reset` 경로를 기본적으로 차단합니다.
 
 ## 6. 검사 명령
 
@@ -91,9 +98,10 @@ pnpm build
 
 ## 7. 현재 프로토타입의 범위
 
-- 로그인 정보와 비밀번호는 목 서버 메모리에만 존재합니다.
-- 새로 만든 모임, 내 장소, 투표 결과는 서버를 재시작하면 사라집니다.
-- 실제 배포 서버에서는 비밀번호 해시, 영구 데이터베이스, OAuth 제공자 검증, 접근 토큰 갱신, 요청 제한과 로그 처리가 추가로 필요합니다.
+- 로그인 정보, 모임, 내 장소와 투표 결과는 Supabase PostgreSQL에 영구 저장됩니다.
+- 테스트 계정 비밀번호는 bcrypt로 해시해 저장합니다.
+- 자동 테스트는 실제 Supabase 데이터를 변경하지 않도록 메모리 저장소를 사용합니다.
+- 실제 배포 서버에서는 OAuth 제공자 검증, 안전한 접근·갱신 토큰, 요청 제한과 운영 로그 처리가 추가로 필요합니다.
 - 결과 화면은 현재 5초 간격 조회 방식입니다. 사용량이 늘면 WebSocket 또는 Server-Sent Events로 교체할 수 있습니다.
 - API 계약의 기준 문서는 `docs/openapi.yaml`이며, 화면·규칙의 기준은 `docs/flow.md`와 `docs/data-model.md`입니다.
 
@@ -109,7 +117,7 @@ pnpm build
 6. 생성될 서비스와 요금제를 확인한 뒤 `Deploy Blueprint`를 선택합니다.
 7. 배포가 끝나면 Render가 발급한 `https://...onrender.com` 주소를 모바일 브라우저에서 엽니다.
 
-Blueprint 생성 중 `VITE_NAVER_MAP_CLIENT_ID`, `NAVER_SEARCH_CLIENT_ID`, `NAVER_SEARCH_CLIENT_SECRET`을 입력합니다. 네이버 클라우드 Maps Application의 Web 서비스 URL에도 Render에서 발급된 호스트 주소를 등록해야 합니다. 검색 API Client Secret은 Render 환경 변수에만 저장합니다.
+Blueprint 생성 중 `VITE_NAVER_MAP_CLIENT_ID`, `NAVER_SEARCH_CLIENT_ID`, `NAVER_SEARCH_CLIENT_SECRET`, `DATABASE_URL`을 입력합니다. 네이버 클라우드 Maps Application의 Web 서비스 URL에도 Render에서 발급된 호스트 주소를 등록해야 합니다. 검색 API Client Secret과 데이터베이스 연결 문자열은 Render 환경 변수에만 저장합니다.
 
 통합 배포를 로컬에서 미리 확인하려면 다음 순서로 실행합니다.
 

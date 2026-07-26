@@ -10,11 +10,12 @@ import express, {
 } from "express";
 import { z, ZodError } from "zod";
 import type { Mood, Purpose } from "@damo/contracts";
+import { checkStorage, storageKind, store } from "./app-store.js";
 import {
   naverSearchCredentials,
   searchNaverLocalPlaces
 } from "./naver-search.js";
-import { store, StoreError } from "./store.js";
+import { StoreError } from "./store.js";
 
 declare global {
   namespace Express {
@@ -29,8 +30,6 @@ const moodSchema = z.enum(["FUN", "QUIET", "BUSINESS", "TIPSY"]);
 
 export const app = express();
 const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));
-const localEnvPath = path.resolve(moduleDirectory, "../.env.local");
-if (existsSync(localEnvPath)) process.loadEnvFile(localEnvPath);
 const webDistDirectory = path.resolve(moduleDirectory, "../../web/dist");
 const webIndexPath = path.join(webDistDirectory, "index.html");
 const servesWeb = process.env.DAMO_SERVE_WEB === "true";
@@ -55,20 +54,29 @@ const asyncRoute =
 const pathParam = (req: Request, name: string) =>
   z.string().min(1).parse(req.params[name]);
 
-const auth = (req: Request, _res: Response, next: NextFunction) => {
+const auth = asyncRoute(async (req, _res, next) => {
   const header = req.header("authorization");
   const token = header?.startsWith("Bearer ") ? header.slice(7) : undefined;
-  req.userId = store.userIdForToken(token);
+  req.userId = await store.userIdForToken(token);
   next();
-};
-
-app.get("/health", (_req, res) => {
-  res.json({ status: "ok", service: "damo-mock-api", time: new Date().toISOString() });
 });
+
+app.get(
+  "/health",
+  asyncRoute(async (_req, res) => {
+    await checkStorage();
+    res.json({
+      status: "ok",
+      service: "damo-api",
+      storage: storageKind,
+      time: new Date().toISOString()
+    });
+  })
+);
 
 app.post(
   "/api/v1/auth/test/signup",
-  asyncRoute((req, res) => {
+  asyncRoute(async (req, res) => {
     const body = z
       .object({
         loginId: z.string().min(3).max(40),
@@ -77,23 +85,27 @@ app.post(
         email: z.string().email().nullable().optional()
       })
       .parse(req.body);
-    return ok(res, store.signup(body.loginId, body.nickname, body.password, body.email), 201);
+    return ok(
+      res,
+      await store.signup(body.loginId, body.nickname, body.password, body.email),
+      201
+    );
   })
 );
 
 app.post(
   "/api/v1/auth/test/login",
-  asyncRoute((req, res) => {
+  asyncRoute(async (req, res) => {
     const body = z
       .object({ loginId: z.string().min(1), password: z.string().min(1) })
       .parse(req.body);
-    return ok(res, store.login(body.loginId, body.password));
+    return ok(res, await store.login(body.loginId, body.password));
   })
 );
 
 app.get(
   "/api/v1/auth/oauth/:provider",
-  asyncRoute((req, res) => {
+  asyncRoute(async (req, res) => {
     const provider = z.enum(["kakao", "naver", "google"]).parse(pathParam(req, "provider"));
     const redirectUri = z
       .string()
@@ -110,7 +122,7 @@ app.get(
 
 app.get(
   "/api/v1/auth/oauth/:provider/callback",
-  asyncRoute((req, res) => {
+  asyncRoute(async (req, res) => {
     const provider = z.enum(["kakao", "naver", "google"]).parse(pathParam(req, "provider"));
     const redirectUri = z
       .string()
@@ -126,10 +138,10 @@ app.get(
 
 app.post(
   "/api/v1/auth/refresh",
-  asyncRoute((req, res) => {
+  asyncRoute(async (req, res) => {
     const body = z.object({ refreshToken: z.string().min(1) }).parse(req.body);
     const userId = body.refreshToken.replace("mock-refresh-", "");
-    store.getUser(userId);
+    await store.getUser(userId);
     return ok(res, {
       accessToken: `mock-token-${userId}`,
       refreshToken: body.refreshToken
@@ -139,8 +151,16 @@ app.post(
 
 app.post("/api/v1/auth/logout", auth, (_req, res) => ok(res, { loggedOut: true }));
 
-app.get("/api/v1/me", auth, (req, res) => ok(res, store.getUser(req.userId!)));
-app.get("/api/v1/me/home", auth, (req, res) => ok(res, store.home(req.userId!)));
+app.get(
+  "/api/v1/me",
+  auth,
+  asyncRoute(async (req, res) => ok(res, await store.getUser(req.userId!)))
+);
+app.get(
+  "/api/v1/me/home",
+  auth,
+  asyncRoute(async (req, res) => ok(res, await store.home(req.userId!)))
+);
 
 app.get(
   "/api/v1/map/places/search",
@@ -151,7 +171,7 @@ app.get(
     if (query && credentials) {
       try {
         const result = await searchNaverLocalPlaces(query, credentials);
-        return ok(res, store.upsertPlaces(result));
+        return ok(res, await store.upsertPlaces(result));
       } catch (error) {
         console.error("Naver local search failed", error);
         throw new StoreError(
@@ -161,22 +181,30 @@ app.get(
         );
       }
     }
-    return ok(res, store.searchPlaces(query));
+    return ok(res, await store.searchPlaces(query));
   })
 );
 
 app.get(
   "/api/v1/map/places/:naverPlaceId",
   auth,
-  asyncRoute((req, res) => ok(res, store.getPlace(pathParam(req, "naverPlaceId"))))
+  asyncRoute(async (req, res) =>
+    ok(res, await store.getPlace(pathParam(req, "naverPlaceId")))
+  )
 );
 
-app.get("/api/v1/me/places", auth, (req, res) => ok(res, store.listUserPlaces(req.userId!)));
+app.get(
+  "/api/v1/me/places",
+  auth,
+  asyncRoute(async (req, res) =>
+    ok(res, await store.listUserPlaces(req.userId!))
+  )
+);
 
 app.post(
   "/api/v1/me/places",
   auth,
-  asyncRoute((req, res) => {
+  asyncRoute(async (req, res) => {
     const body = z
       .object({
         naverPlaceId: z.string().min(1),
@@ -186,7 +214,7 @@ app.post(
       .parse(req.body);
     return ok(
       res,
-      store.registerUserPlace(
+      await store.registerUserPlace(
         req.userId!,
         body.naverPlaceId,
         body.purpose as Purpose,
@@ -200,7 +228,7 @@ app.post(
 app.patch(
   "/api/v1/me/places/:userPlaceId",
   auth,
-  asyncRoute((req, res) => {
+  asyncRoute(async (req, res) => {
     const body = z
       .object({
         purpose: purposeSchema,
@@ -210,7 +238,7 @@ app.patch(
       .parse(req.body);
     return ok(
       res,
-      store.updateUserPlace(
+      await store.updateUserPlace(
         req.userId!,
         pathParam(req, "userPlaceId"),
         body.purpose,
@@ -224,13 +252,13 @@ app.patch(
 app.post(
   "/api/v1/me/places/:userPlaceId/unregister",
   auth,
-  asyncRoute((req, res) => {
+  asyncRoute(async (req, res) => {
     const body = z
       .object({ applyToActiveMeetings: z.boolean().default(false) })
       .parse(req.body);
     return ok(
       res,
-      store.unregisterUserPlace(
+      await store.unregisterUserPlace(
         req.userId!,
         pathParam(req, "userPlaceId"),
         body.applyToActiveMeetings
@@ -242,7 +270,7 @@ app.post(
 app.post(
   "/api/v1/meetings",
   auth,
-  asyncRoute((req, res) => {
+  asyncRoute(async (req, res) => {
     const body = z
       .object({
         name: z.string().min(1).max(20),
@@ -252,29 +280,31 @@ app.post(
         mood: moodSchema
       })
       .parse(req.body);
-    return ok(res, store.createMeeting(req.userId!, body), 201);
+    return ok(res, await store.createMeeting(req.userId!, body), 201);
   })
 );
 
 app.post(
   "/api/v1/meetings/lookup",
   auth,
-  asyncRoute((req, res) => {
+  asyncRoute(async (req, res) => {
     const body = z.object({ joinCode: z.string().regex(/^\d{4}$/) }).parse(req.body);
-    return ok(res, store.lookupMeeting(body.joinCode));
+    return ok(res, await store.lookupMeeting(body.joinCode));
   })
 );
 
 app.get(
   "/api/v1/meetings/:meetingId",
   auth,
-  asyncRoute((req, res) => ok(res, store.detail(pathParam(req, "meetingId"), req.userId!)))
+  asyncRoute(async (req, res) =>
+    ok(res, await store.detail(pathParam(req, "meetingId"), req.userId!))
+  )
 );
 
 app.post(
   "/api/v1/meetings/:meetingId/join",
   auth,
-  asyncRoute((req, res) => {
+  asyncRoute(async (req, res) => {
     const body = z
       .object({
         joinCode: z.string().regex(/^\d{4}$/),
@@ -283,7 +313,7 @@ app.post(
       .parse(req.body);
     return ok(
       res,
-      store.joinMeeting(
+      await store.joinMeeting(
         req.userId!,
         pathParam(req, "meetingId"),
         body.joinCode,
@@ -296,16 +326,18 @@ app.post(
 app.post(
   "/api/v1/meetings/:meetingId/leave",
   auth,
-  asyncRoute((req, res) => ok(res, store.leaveMeeting(pathParam(req, "meetingId"), req.userId!)))
+  asyncRoute(async (req, res) =>
+    ok(res, await store.leaveMeeting(pathParam(req, "meetingId"), req.userId!))
+  )
 );
 
 app.post(
   "/api/v1/meetings/:meetingId/members/:memberId/kick",
   auth,
-  asyncRoute((req, res) =>
+  asyncRoute(async (req, res) =>
     ok(
       res,
-      store.kickMember(
+      await store.kickMember(
         pathParam(req, "meetingId"),
         req.userId!,
         pathParam(req, "memberId")
@@ -317,31 +349,35 @@ app.post(
 app.delete(
   "/api/v1/meetings/:meetingId",
   auth,
-  asyncRoute((req, res) => ok(res, store.deleteMeeting(pathParam(req, "meetingId"), req.userId!)))
+  asyncRoute(async (req, res) =>
+    ok(res, await store.deleteMeeting(pathParam(req, "meetingId"), req.userId!))
+  )
 );
 
 app.get(
   "/api/v1/meetings/:meetingId/eligible-places",
   auth,
-  asyncRoute((req, res) => ok(res, store.eligiblePlaces(pathParam(req, "meetingId"), req.userId!)))
+  asyncRoute(async (req, res) =>
+    ok(res, await store.eligiblePlaces(pathParam(req, "meetingId"), req.userId!))
+  )
 );
 
 app.get(
   "/api/v1/meetings/:meetingId/candidates",
   auth,
-  asyncRoute((req, res) =>
-    ok(res, store.publicCandidates(pathParam(req, "meetingId"), req.userId!))
+  asyncRoute(async (req, res) =>
+    ok(res, await store.publicCandidates(pathParam(req, "meetingId"), req.userId!))
   )
 );
 
 app.put(
   "/api/v1/meetings/:meetingId/candidates/me",
   auth,
-  asyncRoute((req, res) => {
+  asyncRoute(async (req, res) => {
     const body = z.object({ userPlaceIds: z.array(z.string()).max(2) }).parse(req.body);
     return ok(
       res,
-      store.replaceMyCandidates(
+      await store.replaceMyCandidates(
         pathParam(req, "meetingId"),
         req.userId!,
         body.userPlaceIds
@@ -353,21 +389,23 @@ app.put(
 app.post(
   "/api/v1/meetings/:meetingId/vote",
   auth,
-  asyncRoute((req, res) =>
-    ok(res, store.createVote(pathParam(req, "meetingId"), req.userId!), 201)
+  asyncRoute(async (req, res) =>
+    ok(res, await store.createVote(pathParam(req, "meetingId"), req.userId!), 201)
   )
 );
 
 app.get(
   "/api/v1/meetings/:meetingId/vote/session",
   auth,
-  asyncRoute((req, res) => ok(res, store.voteSession(pathParam(req, "meetingId"), req.userId!)))
+  asyncRoute(async (req, res) =>
+    ok(res, await store.voteSession(pathParam(req, "meetingId"), req.userId!))
+  )
 );
 
 app.post(
   "/api/v1/meetings/:meetingId/vote/choices",
   auth,
-  asyncRoute((req, res) => {
+  asyncRoute(async (req, res) => {
     const body = z
       .object({
         roundNumber: z.number().int().min(1),
@@ -376,7 +414,7 @@ app.post(
       .parse(req.body);
     return ok(
       res,
-      store.saveChoice(
+      await store.saveChoice(
         pathParam(req, "meetingId"),
         req.userId!,
         body.roundNumber,
@@ -389,17 +427,19 @@ app.post(
 app.get(
   "/api/v1/meetings/:meetingId/vote/results",
   auth,
-  asyncRoute((req, res) => ok(res, store.voteResults(pathParam(req, "meetingId"), req.userId!)))
+  asyncRoute(async (req, res) =>
+    ok(res, await store.voteResults(pathParam(req, "meetingId"), req.userId!))
+  )
 );
 
 app.post(
   "/api/v1/meetings/:meetingId/vote/close",
   auth,
-  asyncRoute((req, res) => {
+  asyncRoute(async (req, res) => {
     const body = z.object({ force: z.boolean().default(false) }).parse(req.body);
     return ok(
       res,
-      store.closeVote(pathParam(req, "meetingId"), req.userId!, body.force)
+      await store.closeVote(pathParam(req, "meetingId"), req.userId!, body.force)
     );
   })
 );
@@ -407,11 +447,11 @@ app.post(
 app.post(
   "/api/v1/meetings/:meetingId/vote/final-selection",
   auth,
-  asyncRoute((req, res) => {
+  asyncRoute(async (req, res) => {
     const body = z.object({ candidateId: z.string().min(1) }).parse(req.body);
     return ok(
       res,
-      store.finalSelection(
+      await store.finalSelection(
         pathParam(req, "meetingId"),
         req.userId!,
         body.candidateId
@@ -420,10 +460,23 @@ app.post(
   })
 );
 
-app.post("/api/v1/__mock/reset", (_req, res) => {
-  store.reset();
-  return ok(res, { reset: true });
-});
+app.post(
+  "/api/v1/__mock/reset",
+  asyncRoute(async (_req, res) => {
+    if (
+      storageKind === "postgres" &&
+      process.env.DAMO_ENABLE_DB_RESET !== "true"
+    ) {
+      throw new StoreError(
+        404,
+        "ROUTE_NOT_FOUND",
+        "요청한 API 경로를 찾을 수 없습니다."
+      );
+    }
+    await store.reset();
+    return ok(res, { reset: true });
+  })
+);
 
 if (servesWeb) {
   app.use(express.static(webDistDirectory));
@@ -473,7 +526,7 @@ const errorHandler: ErrorRequestHandler = (error, _req, res, _next) => {
   res.status(500).json({
     error: {
       code: "INTERNAL_SERVER_ERROR",
-      message: "목 API 서버에서 오류가 발생했습니다."
+      message: "API 서버에서 오류가 발생했습니다."
     }
   });
 };

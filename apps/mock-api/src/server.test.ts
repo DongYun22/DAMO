@@ -3,7 +3,7 @@ import { after, before, describe, it } from "node:test";
 import type { AddressInfo } from "node:net";
 import type { Place } from "@damo/contracts";
 import { app } from "./server.js";
-import { store } from "./store.js";
+import { store } from "./app-store.js";
 
 let baseUrl = "";
 const server = app.listen(0, "127.0.0.1");
@@ -28,7 +28,7 @@ const request = async (path: string, init: RequestInit = {}) =>
 
 describe("DAMO mock API", () => {
   it("returns seeded home sections and vote alert", async () => {
-    store.reset();
+    await store.reset();
     const response = await request("/api/v1/me/home");
     assert.equal(response.status, 200);
     const body = await response.json();
@@ -38,7 +38,7 @@ describe("DAMO mock API", () => {
   });
 
   it("creates a meeting and enforces minimum capacity", async () => {
-    store.reset();
+    await store.reset();
     const invalid = await request("/api/v1/meetings", {
       method: "POST",
       body: JSON.stringify({
@@ -83,7 +83,7 @@ describe("DAMO mock API", () => {
   });
 
   it("registers a searched NAVER place and returns it from My Places", async () => {
-    store.reset();
+    await store.reset();
     const searchedPlace: Place = {
       id: "place-naver-98765",
       naverPlaceId: "naver-98765",
@@ -119,7 +119,7 @@ describe("DAMO mock API", () => {
   });
 
   it("runs the current user's N-1 vote and removes the alert", async () => {
-    store.reset();
+    await store.reset();
     const first = await request("/api/v1/meetings/meeting-2/vote/session");
     const firstBody = await first.json();
     assert.equal(firstBody.data.totalRounds, 2);

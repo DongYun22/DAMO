@@ -992,7 +992,7 @@ select {
 }
 
 .map-canvas--compact {
-  height: 180px;
+  height: 136px;
   margin-top: 4px;
   border-radius: 20px;
 }
@@ -1363,6 +1363,24 @@ button.candidate-row {
 
 .candidate-row__side svg {
   color: var(--primary);
+}
+
+.candidate-list--scrollable {
+  max-height: 286px;
+  padding-right: 4px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-color: rgba(21, 49, 71, 0.24) transparent;
+  scrollbar-width: thin;
+}
+
+.candidate-list--scrollable::-webkit-scrollbar {
+  width: 5px;
+}
+
+.candidate-list--scrollable::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(21, 49, 71, 0.24);
 }
 
 .chip-field {
@@ -1739,32 +1757,49 @@ button.candidate-row {
   box-shadow: var(--shadow-soft);
 }
 
-.meeting-hero__tags {
-  margin: 0 0 18px;
+.meeting-hero--with-invite {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 146px;
+  align-items: stretch;
+  gap: 12px;
 }
 
-.meeting-hero > p {
+.meeting-hero__tags {
+  margin: 0 0 14px;
+}
+
+.meeting-hero__tags span {
+  color: var(--primary);
+  background: rgba(255, 255, 255, 0.38);
+  backdrop-filter: blur(14px) saturate(126%);
+  -webkit-backdrop-filter: blur(14px) saturate(126%);
+}
+
+.meeting-hero__summary > p {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin: 10px 0;
+  margin: 9px 0;
   color: var(--ink-soft);
   font-size: 14px;
 }
 
-.meeting-hero > p svg {
+.meeting-hero__summary > p svg {
+  flex: 0 0 auto;
   color: var(--primary);
 }
 
 .invite-code {
   display: flex;
+  flex-direction: column;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-top: 18px;
-  padding: 14px;
+  justify-content: center;
+  gap: 10px;
+  margin: 0;
+  padding: 12px;
   border-radius: 16px;
   background: var(--primary-soft);
+  text-align: center;
 }
 
 .invite-code span,
@@ -1779,10 +1814,10 @@ button.candidate-row {
 }
 
 .invite-code strong {
-  margin-top: 2px;
+  margin-top: 4px;
   color: var(--primary);
-  font-size: 25px;
-  letter-spacing: 0.14em;
+  font-size: 23px;
+  letter-spacing: 0.12em;
 }
 
 .invite-code button {
@@ -1790,13 +1825,75 @@ button.candidate-row {
   align-items: center;
   gap: 6px;
   min-height: 42px;
-  padding: 0 12px;
+  width: 100%;
+  padding: 0 8px;
   border: 0;
   border-radius: 12px;
   color: var(--primary);
   background: white;
   font-size: 12px;
   font-weight: 850;
+}
+
+.page--candidate-map .map-canvas {
+  height: min(55dvh, 460px);
+  margin-top: 2px;
+}
+
+.candidate-map-detail {
+  display: flex;
+  gap: 14px;
+  margin-top: 14px;
+  padding: 16px;
+  border: 1px solid var(--glass-border);
+  border-radius: 22px;
+  background: var(--glass-surface-strong);
+  box-shadow:
+    var(--glass-highlight),
+    var(--glass-shadow);
+  backdrop-filter: blur(22px) saturate(128%);
+  -webkit-backdrop-filter: blur(22px) saturate(128%);
+}
+
+.candidate-map-detail .place-thumbnail {
+  flex: 0 0 auto;
+}
+
+.candidate-map-detail__body {
+  min-width: 0;
+}
+
+.candidate-map-detail__body > span {
+  color: var(--primary);
+  font-size: 11px;
+  font-weight: 850;
+}
+
+.candidate-map-detail__body h2 {
+  margin: 3px 0 6px;
+  font-size: 20px;
+  letter-spacing: -0.035em;
+}
+
+.candidate-map-detail__body p,
+.candidate-map-detail__body small {
+  display: block;
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.candidate-map-detail__body small {
+  margin-top: 4px;
+  color: var(--muted);
+}
+
+.candidate-map-detail__recommendation {
+  margin-top: 10px;
+  color: var(--primary);
+  font-size: 11px;
+  font-weight: 800;
 }
 
 .member-list {
@@ -1903,7 +2000,7 @@ button.candidate-row {
   display: block;
   height: 100%;
   border-radius: inherit;
-  background: var(--pink);
+  background: var(--primary);
   transition: width 240ms ease;
 }
 
@@ -1952,8 +2049,8 @@ button.candidate-row {
   align-items: center;
   gap: 12px;
   width: 100%;
-  min-height: 126px;
-  padding: 14px 16px 14px 12px;
+  min-height: 106px;
+  padding: 11px 16px 11px 12px;
   border: 1px solid var(--line);
   border-radius: 22px;
   color: var(--ink);
@@ -1972,8 +2069,8 @@ button.candidate-row {
 }
 
 .vote-choice.is-selected {
-  border-color: var(--pink);
-  background: var(--pink-softer);
+  border-color: var(--primary);
+  background: rgba(237, 234, 228, 0.78);
   transform: scale(1.012);
 }
 
@@ -1987,8 +2084,8 @@ button.candidate-row {
   width: 32px;
   height: 32px;
   border-radius: 11px;
-  color: var(--pink-strong);
-  background: var(--pink-soft);
+  color: var(--primary);
+  background: var(--primary-soft);
   font-size: 13px;
   font-weight: 900;
 }
@@ -2029,7 +2126,7 @@ button.candidate-row {
   position: absolute;
   top: 12px;
   right: 12px;
-  color: var(--pink);
+  color: var(--primary);
   opacity: 0;
 }
 
@@ -2038,11 +2135,61 @@ button.candidate-row {
 }
 
 .vote-helper {
-  margin: 16px 8px 0;
+  margin: 11px 8px 0;
   color: var(--muted);
   text-align: center;
   font-size: 12px;
   line-height: 1.55;
+}
+
+.page--vote .screen-header {
+  margin-bottom: 12px;
+}
+
+.page--vote .vote-progress {
+  margin-bottom: 11px;
+}
+
+.page--vote .versus-label {
+  margin-top: 12px;
+}
+
+.vote-intro-heading {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 18px;
+  margin: 8px 2px 16px;
+}
+
+.vote-intro-heading > div {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+}
+
+.vote-intro-heading span {
+  color: var(--ink-soft);
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.vote-intro-heading strong {
+  color: var(--primary);
+  font-size: 24px;
+}
+
+.vote-intro-heading p {
+  max-width: 220px;
+  margin: 0;
+  color: var(--muted);
+  text-align: right;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.vote-candidate-overview {
+  max-height: min(52dvh, 452px);
 }
 
 .result-status-card {
@@ -2464,6 +2611,27 @@ button.candidate-row {
     white-space: nowrap;
   }
 
+  .meeting-hero {
+    padding: 16px;
+  }
+
+  .meeting-hero--with-invite {
+    grid-template-columns: minmax(0, 1fr) 124px;
+    gap: 8px;
+  }
+
+  .invite-code {
+    padding: 10px 8px;
+  }
+
+  .invite-code strong {
+    font-size: 20px;
+  }
+
+  .invite-code button {
+    font-size: 11px;
+  }
+
   .vote-choice {
     grid-template-columns: auto 58px minmax(0, 1fr);
     padding-right: 12px;
@@ -2785,8 +2953,8 @@ body {
 }
 
 .vote-choice.is-selected {
-  border-color: rgba(255, 79, 135, 0.6);
-  background: rgba(255, 240, 245, 0.7);
+  border-color: rgba(21, 49, 71, 0.5);
+  background: rgba(237, 234, 228, 0.76);
 }
 
 .danger-box,

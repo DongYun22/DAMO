@@ -11,7 +11,8 @@ import type {
   Place,
   Purpose,
   User,
-  UserPlace
+  UserPlace,
+  VoteSessionView
 } from "@damo/contracts";
 import type { Pool, PoolClient } from "pg";
 import { createDatabasePool } from "./database.js";
@@ -63,6 +64,24 @@ interface UserPlaceRow extends PlaceRow {
   updatedAt: Date | string;
 }
 
+interface CandidateQueryRow extends PlaceRow {
+  candidateId: string;
+  meetingId: string;
+  isFrozen: boolean;
+  recommendationCount: number;
+  recommendedByMe: boolean;
+  recommenderNames: string[];
+}
+
+interface VoteSessionQueryRow {
+  id: string;
+  status: VoteSessionView["status"];
+  totalRounds: number;
+  completedRounds: number;
+  candidateOrder: string[];
+  currentWinnerCandidateId: string | null;
+}
+
 const placeFromRow = (row: PlaceRow): Place => ({
   id: row.id,
   naverPlaceId: row.naverPlaceId,
@@ -90,6 +109,160 @@ const userPlaceFromRow = (row: UserPlaceRow): UserPlace => ({
 
 export class PostgresStore {
   constructor(private readonly pool: Pool = createDatabasePool()) {}
+
+  private async queryPublicCandidates(
+    client: PoolClient,
+    meetingId: string,
+    userId: string,
+    candidateIds?: string[]
+  ): Promise<Candidate[]> {
+    const result = await client.query<CandidateQueryRow>(
+      `
+        select
+          candidate.id as "candidateId",
+          candidate.meeting_id as "meetingId",
+          candidate.is_frozen as "isFrozen",
+          count(recommendation.member_id)::int as "recommendationCount",
+          bool_or(member.user_id = $2) as "recommendedByMe",
+          array_agg(member.meeting_nickname order by member.meeting_nickname)
+            as "recommenderNames",
+          p.id,
+          p.naver_place_id as "naverPlaceId",
+          p.name,
+          p.category,
+          p.address,
+          p.road_address as "roadAddress",
+          p.latitude,
+          p.longitude,
+          p.station,
+          p.distance_text as "distanceText",
+          p.image_url as "imageUrl"
+        from meeting_candidates candidate
+        join candidate_recommendations recommendation
+          on recommendation.candidate_id = candidate.id
+        join meeting_members member on member.id = recommendation.member_id
+        join places p on p.id = candidate.place_id
+        where candidate.meeting_id = $1
+          and ($3::text[] is null or candidate.id = any($3::text[]))
+        group by candidate.id, p.id
+        order by p.name collate "C"
+      `,
+      [meetingId, userId, candidateIds ?? null]
+    );
+    return result.rows.map(
+      (row): Candidate => ({
+        id: row.candidateId,
+        meetingId: row.meetingId,
+        place: placeFromRow(row),
+        recommendationCount: row.recommendationCount,
+        recommendedByMe: row.recommendedByMe,
+        recommenderNames: row.recommenderNames,
+        isFrozen: row.isFrozen
+      })
+    );
+  }
+
+  private async voteSessionWithClient(
+    client: PoolClient,
+    meetingId: string,
+    userId: string
+  ): Promise<VoteSessionView> {
+    const meetingResult = await client.query<{ status: MeetingStatus }>(
+      `
+        select status
+        from meetings
+        where id = $1 and deleted_at is null
+      `,
+      [meetingId]
+    );
+    const meeting = meetingResult.rows[0];
+    if (!meeting) {
+      throw new StoreError(404, "MEETING_NOT_FOUND", "모임을 찾을 수 없습니다.");
+    }
+    if (meeting.status !== "VOTING") {
+      throw new StoreError(409, "VOTE_NOT_OPEN", "진행 중인 투표가 없습니다.");
+    }
+
+    const sessionResult = await client.query<VoteSessionQueryRow>(
+      `
+        select
+          id,
+          status,
+          total_rounds as "totalRounds",
+          completed_rounds as "completedRounds",
+          candidate_order as "candidateOrder",
+          current_winner_candidate_id as "currentWinnerCandidateId"
+        from vote_sessions
+        where meeting_id = $1 and user_id = $2
+        limit 1
+      `,
+      [meetingId, userId]
+    );
+    const session = sessionResult.rows[0];
+    if (!session) {
+      throw new StoreError(
+        404,
+        "VOTE_SESSION_NOT_FOUND",
+        "개인 투표 세션을 찾을 수 없습니다."
+      );
+    }
+    if (session.status === "COMPLETED") {
+      return {
+        sessionId: session.id,
+        status: session.status,
+        totalRounds: session.totalRounds,
+        completedRounds: session.completedRounds,
+        round: null
+      };
+    }
+
+    const roundNumber = session.completedRounds + 1;
+    const nextCandidateId = session.candidateOrder[roundNumber];
+    const currentWinnerId =
+      session.currentWinnerCandidateId ?? session.candidateOrder[0];
+    if (!nextCandidateId || !currentWinnerId) {
+      throw new StoreError(
+        500,
+        "INVALID_VOTE_SESSION",
+        "투표 순서가 올바르지 않습니다."
+      );
+    }
+    const swap = roundNumber % 2 === 0;
+    const candidateAId = swap ? nextCandidateId : currentWinnerId;
+    const candidateBId = swap ? currentWinnerId : nextCandidateId;
+    const candidates = await this.queryPublicCandidates(
+      client,
+      meetingId,
+      userId,
+      [candidateAId, candidateBId]
+    );
+    const candidateById = new Map(
+      candidates.map((candidate) => [candidate.id, candidate])
+    );
+    const candidateA = candidateById.get(candidateAId);
+    const candidateB = candidateById.get(candidateBId);
+    if (!candidateA || !candidateB) {
+      throw new StoreError(
+        500,
+        "INVALID_VOTE_SESSION",
+        "투표 후보 정보를 찾을 수 없습니다."
+      );
+    }
+
+    return {
+      sessionId: session.id,
+      status: session.completedRounds === 0 ? "NOT_STARTED" : "IN_PROGRESS",
+      totalRounds: session.totalRounds,
+      completedRounds: session.completedRounds,
+      round: {
+        roundNumber,
+        totalRounds: session.totalRounds,
+        completedRounds: session.completedRounds,
+        candidateA,
+        candidateB
+      }
+    };
+  }
 
   private async queryUserPlaces(
     userId: string,
@@ -1411,69 +1584,27 @@ export class PostgresStore {
   }
 
   async publicCandidates(meetingId: string, userId: string) {
-    const access = await this.pool.query(
-      `
-        select 1
-        from meeting_members
-        where meeting_id = $1 and user_id = $2 and status = 'ACTIVE'
-      `,
-      [meetingId, userId]
-    );
-    if (access.rowCount === 0) {
-      throw new StoreError(403, "MEETING_ACCESS_DENIED", "모임원이 아닙니다.");
-    }
-    const result = await this.pool.query<
-      PlaceRow & {
-        candidateId: string;
-        meetingId: string;
-        isFrozen: boolean;
-        recommendationCount: number;
-        recommendedByMe: boolean;
-        recommenderNames: string[];
+    const client = await this.pool.connect();
+    try {
+      const access = await client.query(
+        `
+          select 1
+          from meeting_members
+          where meeting_id = $1 and user_id = $2 and status = 'ACTIVE'
+        `,
+        [meetingId, userId]
+      );
+      if (access.rowCount === 0) {
+        throw new StoreError(
+          403,
+          "MEETING_ACCESS_DENIED",
+          "모임원이 아닙니다."
+        );
       }
-    >(
-      `
-        select
-          candidate.id as "candidateId",
-          candidate.meeting_id as "meetingId",
-          candidate.is_frozen as "isFrozen",
-          count(recommendation.member_id)::int as "recommendationCount",
-          bool_or(member.user_id = $2) as "recommendedByMe",
-          array_agg(member.meeting_nickname order by member.meeting_nickname)
-            as "recommenderNames",
-          p.id,
-          p.naver_place_id as "naverPlaceId",
-          p.name,
-          p.category,
-          p.address,
-          p.road_address as "roadAddress",
-          p.latitude,
-          p.longitude,
-          p.station,
-          p.distance_text as "distanceText",
-          p.image_url as "imageUrl"
-        from meeting_candidates candidate
-        join candidate_recommendations recommendation
-          on recommendation.candidate_id = candidate.id
-        join meeting_members member on member.id = recommendation.member_id
-        join places p on p.id = candidate.place_id
-        where candidate.meeting_id = $1
-        group by candidate.id, p.id
-        order by p.name collate "C"
-      `,
-      [meetingId, userId]
-    );
-    return result.rows.map(
-      (row): Candidate => ({
-        id: row.candidateId,
-        meetingId: row.meetingId,
-        place: placeFromRow(row),
-        recommendationCount: row.recommendationCount,
-        recommendedByMe: row.recommendedByMe,
-        recommenderNames: row.recommenderNames,
-        isFrozen: row.isFrozen
-      })
-    );
+      return await this.queryPublicCandidates(client, meetingId, userId);
+    } finally {
+      client.release();
+    }
   }
 
   async replaceMyCandidates(
@@ -1607,7 +1738,12 @@ export class PostgresStore {
   }
 
   async voteSession(meetingId: string, userId: string) {
-    return this.read((store) => store.voteSession(meetingId, userId));
+    const client = await this.pool.connect();
+    try {
+      return await this.voteSessionWithClient(client, meetingId, userId);
+    } finally {
+      client.release();
+    }
   }
 
   async saveChoice(
@@ -1616,14 +1752,143 @@ export class PostgresStore {
     roundNumber: number,
     selectedCandidateId: string
   ) {
-    return this.write((store) =>
-      store.saveChoice(
-        meetingId,
-        userId,
-        roundNumber,
-        selectedCandidateId
-      )
-    );
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      await client.query(
+        "select pg_advisory_xact_lock(hashtext('damo-store-write'))"
+      );
+      const meetingResult = await client.query<{ status: MeetingStatus }>(
+        `
+          select status
+          from meetings
+          where id = $1 and deleted_at is null
+          for update
+        `,
+        [meetingId]
+      );
+      const meeting = meetingResult.rows[0];
+      if (!meeting) {
+        throw new StoreError(404, "MEETING_NOT_FOUND", "모임을 찾을 수 없습니다.");
+      }
+      if (meeting.status !== "VOTING") {
+        throw new StoreError(409, "VOTE_CLOSED", "투표가 종료되었습니다.");
+      }
+
+      const sessionResult = await client.query<VoteSessionQueryRow>(
+        `
+          select
+            id,
+            status,
+            total_rounds as "totalRounds",
+            completed_rounds as "completedRounds",
+            candidate_order as "candidateOrder",
+            current_winner_candidate_id as "currentWinnerCandidateId"
+          from vote_sessions
+          where meeting_id = $1 and user_id = $2
+          for update
+        `,
+        [meetingId, userId]
+      );
+      const session = sessionResult.rows[0];
+      if (!session) {
+        throw new StoreError(
+          404,
+          "VOTE_SESSION_NOT_FOUND",
+          "개인 투표 세션을 찾을 수 없습니다."
+        );
+      }
+
+      const existingChoice = await client.query(
+        `
+          select 1
+          from vote_choices
+          where session_id = $1 and round_number = $2
+        `,
+        [session.id, roundNumber]
+      );
+      if (existingChoice.rowCount === 0) {
+        const currentRoundNumber = session.completedRounds + 1;
+        const nextCandidateId =
+          session.candidateOrder[currentRoundNumber];
+        const currentWinnerId =
+          session.currentWinnerCandidateId ?? session.candidateOrder[0];
+        if (
+          session.status === "COMPLETED" ||
+          roundNumber !== currentRoundNumber ||
+          !nextCandidateId ||
+          !currentWinnerId
+        ) {
+          throw new StoreError(
+            409,
+            "INVALID_ROUND",
+            "현재 진행할 차례가 아닌 라운드입니다."
+          );
+        }
+
+        const swap = currentRoundNumber % 2 === 0;
+        const candidateAId = swap ? nextCandidateId : currentWinnerId;
+        const candidateBId = swap ? currentWinnerId : nextCandidateId;
+        if (
+          selectedCandidateId !== candidateAId &&
+          selectedCandidateId !== candidateBId
+        ) {
+          throw new StoreError(
+            422,
+            "INVALID_SELECTED_CANDIDATE",
+            "A 또는 B 후보 중 하나를 선택해야 합니다."
+          );
+        }
+
+        const completedRounds = session.completedRounds + 1;
+        const status: VoteSessionView["status"] =
+          completedRounds >= session.totalRounds
+            ? "COMPLETED"
+            : "IN_PROGRESS";
+        await client.query(
+          `
+            insert into vote_choices (
+              session_id,
+              round_number,
+              candidate_a_id,
+              candidate_b_id,
+              selected_candidate_id
+            )
+            values ($1, $2, $3, $4, $5)
+          `,
+          [
+            session.id,
+            roundNumber,
+            candidateAId,
+            candidateBId,
+            selectedCandidateId
+          ]
+        );
+        await client.query(
+          `
+            update vote_sessions
+            set
+              status = $2,
+              completed_rounds = $3,
+              current_winner_candidate_id = $4,
+              updated_at = now()
+            where id = $1
+          `,
+          [session.id, status, completedRounds, selectedCandidateId]
+        );
+        await client.query(
+          "update meetings set updated_at = now() where id = $1",
+          [meetingId]
+        );
+      }
+      await client.query("commit");
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
+    return this.voteSession(meetingId, userId);
   }
 
   async voteResults(meetingId: string, userId: string) {

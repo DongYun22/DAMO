@@ -397,7 +397,7 @@ export function MeetingCard({ meeting }: { meeting: MeetingSummary }) {
       to={target}
       className={`meeting-card meeting-card--${meeting.status.toLowerCase()} ${
         meeting.voteAlert ? "meeting-card--alert" : ""
-      }`}
+      } ${meeting.isPastDue && meeting.status !== "COMPLETED" ? "meeting-card--past-due" : ""}`}
     >
       <div className="meeting-card__top">
         <div>
@@ -412,7 +412,9 @@ export function MeetingCard({ meeting }: { meeting: MeetingSummary }) {
         <span>{PURPOSE_LABELS[meeting.purpose]}</span>
         <span>{MOOD_LABELS[meeting.mood]}</span>
         <span className={meeting.status === "VOTING" ? "tag--pink" : ""}>
-          {STATUS_LABELS[meeting.status]}
+          {meeting.isPastDue && meeting.status !== "COMPLETED"
+            ? "일정 지남"
+            : STATUS_LABELS[meeting.status]}
         </span>
       </div>
       <p className="meeting-card__date">{formatMeetingAt(meeting.meetingAt)}</p>

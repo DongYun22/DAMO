@@ -11,6 +11,7 @@ import {
   MapPin,
   Minus,
   Plus,
+  Repeat2,
   RotateCcw,
   Share2,
   Trash2,
@@ -35,6 +36,8 @@ import type {
   Mood,
   Place,
   Purpose,
+  RecurrenceType,
+  RepeatMeetingInput,
   UserPlace,
   VoteResults,
   VoteSessionView
@@ -1020,6 +1023,352 @@ export function CreateMeetingPage() {
   );
 }
 
+export function RepeatMeetingPage() {
+  const { meetingId = "" } = useParams();
+  const navigate = useNavigate();
+  const { refreshHome } = useShell();
+  const defaultDate = useMemo(() => {
+    const value = new Date();
+    value.setDate(value.getDate() + 7);
+    return toDateInput(value);
+  }, []);
+  const [meeting, setMeeting] = useState<MeetingDetail | null>(null);
+  const [name, setName] = useState("");
+  const [capacity, setCapacity] = useState(2);
+  const [date, setDate] = useState(defaultDate);
+  const [meridiem, setMeridiem] = useState<"AM" | "PM">("PM");
+  const [hour, setHour] = useState(7);
+  const [minute, setMinute] = useState<"00" | "30">("30");
+  const [purpose, setPurpose] = useState<Purpose>("MEAL");
+  const [mood, setMood] = useState<Mood>("FUN");
+  const [selectedMemberIds, setSelectedMemberIds] = useState<string[]>([]);
+  const [recurring, setRecurring] = useState(false);
+  const [recurrenceType, setRecurrenceType] =
+    useState<RecurrenceType>("WEEKLY");
+  const [customNextDate, setCustomNextDate] = useState(() => {
+    const value = new Date();
+    value.setDate(value.getDate() + 14);
+    return toDateInput(value);
+  });
+  const [loading, setLoading] = useState(true);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    const load = async () => {
+      try {
+        const detail = await api<MeetingDetail>(`/meetings/${meetingId}`);
+        setMeeting(detail);
+        setName(detail.name);
+        setCapacity(detail.capacity);
+        setPurpose(detail.purpose);
+        setMood(detail.mood);
+        setSelectedMemberIds(detail.members.map((member) => member.id));
+
+        const koreaTime = new Date(
+          new Date(detail.meetingAt).getTime() + 9 * 60 * 60 * 1000
+        );
+        const sourceHour = koreaTime.getUTCHours();
+        setMeridiem(sourceHour < 12 ? "AM" : "PM");
+        setHour(sourceHour % 12 || 12);
+        setMinute(koreaTime.getUTCMinutes() >= 30 ? "30" : "00");
+      } catch (reason) {
+        setError(errorMessage(reason));
+      } finally {
+        setLoading(false);
+      }
+    };
+    void load();
+  }, [meetingId]);
+
+  useEffect(() => {
+    if (recurrenceType !== "CUSTOM" || customNextDate > date) return;
+    const value = new Date(`${date}T00:00:00`);
+    value.setDate(value.getDate() + 7);
+    setCustomNextDate(toDateInput(value));
+  }, [customNextDate, date, recurrenceType]);
+
+  const toggleMember = (memberId: string) => {
+    if (!meeting) return;
+    const member = meeting.members.find((item) => item.id === memberId);
+    if (!member || member.role === "HOST") return;
+    setSelectedMemberIds((current) => {
+      const next = current.includes(memberId)
+        ? current.filter((id) => id !== memberId)
+        : [...current, memberId];
+      if (next.length > capacity) setCapacity(next.length);
+      return next;
+    });
+  };
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    setError("");
+    if (!name.trim()) {
+      setError("모임 이름을 입력해 주세요.");
+      return;
+    }
+    if (capacity < selectedMemberIds.length) {
+      setError("선택한 모임원 수보다 정원을 작게 설정할 수 없습니다.");
+      return;
+    }
+
+    const hour24 =
+      meridiem === "AM"
+        ? hour === 12
+          ? 0
+          : hour
+        : hour === 12
+          ? 12
+          : hour + 12;
+    const time = `${String(hour24).padStart(2, "0")}:${minute}:00+09:00`;
+    const input: RepeatMeetingInput = {
+      name: name.trim(),
+      capacity: Math.max(2, capacity),
+      meetingAt: `${date}T${time}`,
+      purpose,
+      mood,
+      memberIds: selectedMemberIds,
+      recurrence: recurring
+        ? {
+            type: recurrenceType,
+            customNextMeetingAt:
+              recurrenceType === "CUSTOM"
+                ? `${customNextDate}T${time}`
+                : null
+          }
+        : null
+    };
+
+    setSubmitting(true);
+    try {
+      const nextMeeting = await api<MeetingDetail>(
+        `/meetings/${meetingId}/repeat`,
+        { method: "POST", body: JSON.stringify(input) }
+      );
+      await refreshHome();
+      navigate(`/meetings/${nextMeeting.id}`);
+    } catch (reason) {
+      setError(errorMessage(reason));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  if (loading) return <Loading label="이전 모임 불러오는 중" />;
+  if (!meeting) {
+    return (
+      <div className="page">
+        <ScreenHeader title="다시 만나기" />
+        <InlineError message={error} />
+      </div>
+    );
+  }
+
+  return (
+    <div className="page">
+      <ScreenHeader
+        title="다시 만나기"
+        description="지난 모임의 기본 정보와 가입 코드를 그대로 이어가요."
+      />
+      <form className="form-card meeting-form repeat-meeting-form" onSubmit={submit}>
+        <div className="repeat-code-note">
+          <span>유지되는 가입 코드</span>
+          <strong>{meeting.joinCode}</strong>
+        </div>
+
+        <label className="field">
+          <span>모임 이름 <small>{name.length}/20</small></span>
+          <input
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+            maxLength={20}
+            required
+          />
+        </label>
+
+        <fieldset className="capacity-field">
+          <legend>정원</legend>
+          <div>
+            <button
+              type="button"
+              onClick={() =>
+                setCapacity((value) =>
+                  Math.max(2, selectedMemberIds.length, value - 1)
+                )
+              }
+              aria-label="정원 1명 줄이기"
+            >
+              <Minus size={21} />
+            </button>
+            <label>
+              <input
+                type="number"
+                min={Math.max(2, selectedMemberIds.length)}
+                value={capacity}
+                onChange={(event) =>
+                  setCapacity(
+                    Math.max(
+                      2,
+                      selectedMemberIds.length,
+                      Number(event.target.value)
+                    )
+                  )
+                }
+              />
+              <span>명</span>
+            </label>
+            <button
+              type="button"
+              onClick={() => setCapacity((value) => value + 1)}
+              aria-label="정원 1명 늘리기"
+            >
+              <Plus size={21} />
+            </button>
+          </div>
+        </fieldset>
+
+        <label className="field">
+          <span>만나는 날짜</span>
+          <span className="input-with-icon">
+            <CalendarDays size={19} />
+            <input
+              type="date"
+              value={date}
+              min={toDateInput(new Date())}
+              onChange={(event) => setDate(event.target.value)}
+              required
+            />
+          </span>
+        </label>
+
+        <fieldset className="time-field">
+          <legend>만나는 시각</legend>
+          <div className="time-grid">
+            <select
+              value={meridiem}
+              onChange={(event) =>
+                setMeridiem(event.target.value as "AM" | "PM")
+              }
+            >
+              <option value="AM">오전</option>
+              <option value="PM">오후</option>
+            </select>
+            <select
+              value={hour}
+              onChange={(event) => setHour(Number(event.target.value))}
+            >
+              {Array.from({ length: 12 }, (_, index) => index + 1).map(
+                (value) => (
+                  <option key={value} value={value}>{value}시</option>
+                )
+              )}
+            </select>
+            <select
+              value={minute}
+              onChange={(event) =>
+                setMinute(event.target.value as "00" | "30")
+              }
+            >
+              <option value="00">00분</option>
+              <option value="30">30분</option>
+            </select>
+          </div>
+        </fieldset>
+
+        <PurposeMoodFields
+          purpose={purpose}
+          mood={mood}
+          onPurpose={setPurpose}
+          onMood={setMood}
+        />
+
+        <fieldset className="repeat-members">
+          <legend>함께할 모임원</legend>
+          <p>기본으로 모두 선택되어 있어요. 참여하지 않는 사람을 눌러 빼주세요.</p>
+          <div>
+            {meeting.members.map((member) => {
+              const selected = selectedMemberIds.includes(member.id);
+              return (
+                <button
+                  type="button"
+                  key={member.id}
+                  className={selected ? "is-selected" : ""}
+                  disabled={member.role === "HOST"}
+                  onClick={() => toggleMember(member.id)}
+                >
+                  <span>{member.meetingNickname.slice(0, 1)}</span>
+                  <strong>{member.meetingNickname}</strong>
+                  <small>{member.role === "HOST" ? "모임장" : selected ? "참여" : "제외"}</small>
+                  {selected ? <Check size={17} /> : null}
+                </button>
+              );
+            })}
+          </div>
+        </fieldset>
+
+        <label className="recurrence-toggle">
+          <input
+            type="checkbox"
+            checked={recurring}
+            onChange={(event) => setRecurring(event.target.checked)}
+          />
+          <span>
+            <strong>정기적으로 만나기</strong>
+            <small>현재 회차가 완료되면 다음 회차 하나를 자동으로 만들어요.</small>
+          </span>
+        </label>
+
+        {recurring ? (
+          <fieldset className="recurrence-options">
+            <legend>반복 주기</legend>
+            <div>
+              {([
+                ["WEEKLY", "매주"],
+                ["MONTHLY", "매달"],
+                ["CUSTOM", "직접 입력"]
+              ] as const).map(([value, label]) => (
+                <button
+                  type="button"
+                  key={value}
+                  className={recurrenceType === value ? "is-selected" : ""}
+                  onClick={() => setRecurrenceType(value)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            {recurrenceType === "CUSTOM" ? (
+              <label className="field">
+                <span>그다음 회차 날짜</span>
+                <input
+                  type="date"
+                  value={customNextDate}
+                  min={date}
+                  onChange={(event) => setCustomNextDate(event.target.value)}
+                  required
+                />
+              </label>
+            ) : (
+              <p>
+                {recurrenceType === "WEEKLY"
+                  ? "같은 요일과 시각으로 다음 회차를 만들어요."
+                  : "같은 날짜와 시각으로 다음 달 회차를 만들어요."}
+              </p>
+            )}
+          </fieldset>
+        ) : null}
+
+        <InlineError message={error} />
+        <PrimaryButton type="submit" disabled={submitting}>
+          <Repeat2 size={18} />
+          {submitting ? "새 회차 만드는 중" : "새 회차 만들기"}
+        </PrimaryButton>
+      </form>
+    </div>
+  );
+}
+
 interface LookupMeeting {
   id: string;
   name: string;
@@ -1573,6 +1922,14 @@ export function MeetingDetailPage() {
         description="삭제는 되돌릴 수 없으므로 메뉴 안에 작게 배치했어요."
         onClose={() => setMenuOpen(false)}
       >
+        {meeting.status === "COMPLETED" ? (
+          <SecondaryButton
+            type="button"
+            onClick={() => navigate(`/meetings/${meetingId}/repeat`)}
+          >
+            <Plus size={18} /> 다시 만나기
+          </SecondaryButton>
+        ) : null}
         <SecondaryButton
           type="button"
           className="button--danger-text"
@@ -1874,6 +2231,10 @@ export function ResultsPage() {
   const isHost = meeting.role === "HOST";
   const canSeeScores = results.myVoteCompleted || results.voteStatus !== "OPEN";
   const finalResult = results.results.find((item) => item.isFinal);
+  const highestVoteCount = Math.max(
+    1,
+    ...results.results.map((item) => item.voteCount)
+  );
 
   return (
     <div className="page page--results">
@@ -1917,10 +2278,16 @@ export function ResultsPage() {
             내 투표 이어서 하기
           </PrimaryButton>
         </section>
-      ) : (
+      ) : finalResult && results.results.length === 1 ? null : (
         <section>
           <SectionTitle
-            title={results.voteStatus === "OPEN" ? "현재 순위" : "최종 순위"}
+            title={
+              finalResult
+                ? "다른 후보"
+                : results.voteStatus === "OPEN"
+                  ? "현재 순위"
+                  : "최종 순위"
+            }
             action={
               results.voteStatus === "OPEN" ? (
                 <button className="refresh-button" type="button" onClick={() => void load()}>
@@ -1930,27 +2297,64 @@ export function ResultsPage() {
             }
           />
           <div className="ranking-list">
-            {results.results.map((item) => (
-              <div
-                className={`ranking-row ${item.rank === 1 ? "ranking-row--first" : ""}`}
-                key={item.candidate.id}
-              >
-                <span className="ranking-row__rank">
-                  {item.isJointRank ? "공동 " : ""}{item.rank}위
-                </span>
-                <CandidateRow candidate={item.candidate} showVotes={item.voteCount} />
-                {meeting.status === "FINAL_SELECTION" &&
-                isHost &&
-                results.tiedFirstCandidateIds.includes(item.candidate.id) ? (
-                  <PrimaryButton type="button" onClick={() => void finalSelect(item.candidate.id)}>
-                    이 장소로 확정
-                  </PrimaryButton>
-                ) : null}
-              </div>
-            ))}
+            {finalResult
+              ? results.results
+                  .filter((item) => !item.isFinal)
+                  .map((item) => (
+                    <div className="compact-result-row" key={item.candidate.id}>
+                      <div className="compact-result-row__heading">
+                        <span>{item.isJointRank ? "공동 " : ""}{item.rank}위</span>
+                        <strong>{item.candidate.place.name}</strong>
+                        <em>{item.voteCount}표</em>
+                      </div>
+                      <div
+                        className="compact-result-row__track"
+                        aria-label={`${item.candidate.place.name} ${item.voteCount}표`}
+                      >
+                        <span
+                          style={{
+                            width: `${Math.max(
+                              item.voteCount > 0 ? 8 : 0,
+                              (item.voteCount / highestVoteCount) * 100
+                            )}%`
+                          }}
+                        />
+                      </div>
+                    </div>
+                  ))
+              : results.results.map((item) => (
+                  <div
+                    className={`ranking-row ${item.rank === 1 ? "ranking-row--first" : ""}`}
+                    key={item.candidate.id}
+                  >
+                    <span className="ranking-row__rank">
+                      {item.isJointRank ? "공동 " : ""}{item.rank}위
+                    </span>
+                    <CandidateRow candidate={item.candidate} showVotes={item.voteCount} />
+                    {meeting.status === "FINAL_SELECTION" &&
+                    isHost &&
+                    results.tiedFirstCandidateIds.includes(item.candidate.id) ? (
+                      <PrimaryButton type="button" onClick={() => void finalSelect(item.candidate.id)}>
+                        이 장소로 확정
+                      </PrimaryButton>
+                    ) : null}
+                  </div>
+                ))}
           </div>
         </section>
       )}
+
+      {meeting.status === "COMPLETED" ? (
+        <div className="result-navigation">
+          <Link to="/" className="button button--secondary">홈으로</Link>
+          <Link
+            to={`/meetings/${meetingId}`}
+            className="button button--primary"
+          >
+            모임으로
+          </Link>
+        </div>
+      ) : null}
 
       {isHost && results.voteStatus === "OPEN" ? (
         <div className="sticky-page-action">

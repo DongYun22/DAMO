@@ -10,6 +10,8 @@ import type {
   Mood,
   Place,
   Purpose,
+  RecurrenceType,
+  RepeatMeetingInput,
   User,
   UserPlace,
   VoteSessionView
@@ -392,6 +394,11 @@ export class PostgresStore {
       joinCode: string;
       status: MeetingRecord["status"];
       finalCandidateId: string | null;
+      seriesId: string | null;
+      parentMeetingId: string | null;
+      recurrenceType: RecurrenceType | null;
+      recurrenceNextAt: Date | string | null;
+      nextMeetingId: string | null;
       createdAt: Date | string;
       updatedAt: Date | string;
       deletedAt: Date | string | null;
@@ -407,6 +414,11 @@ export class PostgresStore {
         join_code as "joinCode",
         status,
         final_candidate_id as "finalCandidateId",
+        series_id as "seriesId",
+        parent_meeting_id as "parentMeetingId",
+        recurrence_type as "recurrenceType",
+        recurrence_next_at as "recurrenceNextAt",
+        next_meeting_id as "nextMeetingId",
         created_at as "createdAt",
         updated_at as "updatedAt",
         deleted_at as "deletedAt"
@@ -565,6 +577,7 @@ export class PostgresStore {
       meetings: meetingsResult.rows.map((row) => ({
         ...row,
         meetingAt: timestamp(row.meetingAt),
+        recurrenceNextAt: nullableTimestamp(row.recurrenceNextAt),
         createdAt: timestamp(row.createdAt),
         updatedAt: timestamp(row.updatedAt),
         deletedAt: nullableTimestamp(row.deletedAt)
@@ -694,9 +707,14 @@ export class PostgresStore {
         `
           insert into meetings (
             id, name, host_user_id, capacity, meeting_at, purpose, mood,
-            join_code, status, final_candidate_id, created_at, updated_at, deleted_at
+            join_code, status, final_candidate_id, series_id, parent_meeting_id,
+            recurrence_type, recurrence_next_at, next_meeting_id,
+            created_at, updated_at, deleted_at
           )
-          values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+          values (
+            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+            $13, $14, $15, $16, $17, $18
+          )
           on conflict (id) do update set
             name = excluded.name,
             capacity = excluded.capacity,
@@ -706,6 +724,11 @@ export class PostgresStore {
             join_code = excluded.join_code,
             status = excluded.status,
             final_candidate_id = excluded.final_candidate_id,
+            series_id = excluded.series_id,
+            parent_meeting_id = excluded.parent_meeting_id,
+            recurrence_type = excluded.recurrence_type,
+            recurrence_next_at = excluded.recurrence_next_at,
+            next_meeting_id = excluded.next_meeting_id,
             updated_at = excluded.updated_at,
             deleted_at = excluded.deleted_at
         `,
@@ -720,6 +743,11 @@ export class PostgresStore {
           meeting.joinCode,
           meeting.status,
           meeting.finalCandidateId,
+          meeting.seriesId,
+          meeting.parentMeetingId,
+          meeting.recurrenceType,
+          meeting.recurrenceNextAt,
+          meeting.nextMeetingId,
           meeting.createdAt,
           meeting.updatedAt,
           meeting.deletedAt
@@ -1280,6 +1308,10 @@ export class PostgresStore {
       joinCode: string;
       sessionStatus: VoteSessionRecord["status"] | null;
       updatedAt: Date | string;
+      seriesId: string | null;
+      parentMeetingId: string | null;
+      recurrenceType: RecurrenceType | null;
+      recurrenceNextAt: Date | string | null;
       finalId: string | null;
       finalNaverPlaceId: string | null;
       finalName: string | null;
@@ -1311,6 +1343,10 @@ export class PostgresStore {
           m.join_code as "joinCode",
           session.status as "sessionStatus",
           m.updated_at as "updatedAt",
+          m.series_id as "seriesId",
+          m.parent_meeting_id as "parentMeetingId",
+          m.recurrence_type as "recurrenceType",
+          m.recurrence_next_at as "recurrenceNextAt",
           final_place.id as "finalId",
           final_place.naver_place_id as "finalNaverPlaceId",
           final_place.name as "finalName",
@@ -1374,19 +1410,28 @@ export class PostgresStore {
                 ...(row.finalImageUrl ? { imageUrl: row.finalImageUrl } : {})
               }
             : null,
+        isPastDue: new Date(row.meetingAt).getTime() < Date.now(),
+        seriesId: row.seriesId,
+        parentMeetingId: row.parentMeetingId,
+        recurrence: row.recurrenceType
+          ? {
+              type: row.recurrenceType,
+              customNextMeetingAt: nullableTimestamp(row.recurrenceNextAt)
+            }
+          : null,
         updatedAt: timestamp(row.updatedAt)
       };
     });
     const ongoingMeetings = summaries.filter(
-      (meeting) => meeting.status !== "COMPLETED"
+      (meeting) => meeting.status !== "COMPLETED" && !meeting.isPastDue
     );
-    const completedMeetings = summaries.filter(
-      (meeting) => meeting.status === "COMPLETED"
-    );
+    const completedMeetings = summaries
+      .filter((meeting) => meeting.status === "COMPLETED" || meeting.isPastDue)
+      .sort((a, b) => b.meetingAt.localeCompare(a.meetingAt));
     const data: HomeData = {
       ongoingMeetings,
       completedMeetings,
-      hasVoteAlert: ongoingMeetings.some((meeting) => meeting.voteAlert),
+      hasVoteAlert: summaries.some((meeting) => meeting.voteAlert),
       updatedAt: new Date().toISOString()
     };
     return data;
@@ -1394,6 +1439,16 @@ export class PostgresStore {
 
   async createMeeting(userId: string, input: CreateMeetingInput) {
     return this.write((store) => store.createMeeting(userId, input));
+  }
+
+  async repeatMeeting(
+    sourceMeetingId: string,
+    userId: string,
+    input: RepeatMeetingInput
+  ) {
+    return this.write((store) =>
+      store.repeatMeeting(sourceMeetingId, userId, input)
+    );
   }
 
   async lookupMeeting(joinCode: string) {

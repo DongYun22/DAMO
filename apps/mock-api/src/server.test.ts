@@ -82,6 +82,124 @@ describe("DAMO mock API", () => {
     assert.notEqual(anotherBody.data.joinCode, body.data.joinCode);
   });
 
+  it("archives a past-due meeting in the completed home section without changing its status", async () => {
+    await store.reset();
+    const created = await request("/api/v1/meetings", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "지난 일정",
+        capacity: 2,
+        meetingAt: "2026-07-01T19:00:00+09:00",
+        purpose: "MEAL",
+        mood: "QUIET"
+      })
+    });
+    assert.equal(created.status, 201);
+    const createdBody = await created.json();
+
+    const home = await request("/api/v1/me/home");
+    const homeBody = await home.json();
+    const archived = homeBody.data.completedMeetings.find(
+      (meeting: { id: string }) => meeting.id === createdBody.data.id
+    );
+    assert.equal(archived.status, "RECRUITING");
+    assert.equal(archived.isPastDue, true);
+    assert.equal(
+      homeBody.data.ongoingMeetings.some(
+        (meeting: { id: string }) => meeting.id === createdBody.data.id
+      ),
+      false
+    );
+  });
+
+  it("creates a new meeting round with the same code and selected previous members", async () => {
+    await store.reset();
+    const response = await request("/api/v1/meetings/meeting-3/repeat", {
+      method: "POST",
+      headers: { authorization: "Bearer mock-token-user-3" },
+      body: JSON.stringify({
+        name: "주말 카페 투어",
+        capacity: 4,
+        meetingAt: "2026-08-03T13:30:00+09:00",
+        purpose: "CAFE",
+        mood: "FUN",
+        memberIds: ["member-31", "member-32"],
+        recurrence: { type: "WEEKLY" }
+      })
+    });
+    assert.equal(response.status, 201);
+    const body = await response.json();
+    assert.equal(body.data.joinCode, "1208");
+    assert.equal(body.data.parentMeetingId, "meeting-3");
+    assert.equal(body.data.recurrence.type, "WEEKLY");
+    assert.deepEqual(
+      body.data.members.map((member: { userId: string }) => member.userId).sort(),
+      ["user-1", "user-3"]
+    );
+
+    const previous = await request("/api/v1/meetings/meeting-3", {
+      headers: { authorization: "Bearer mock-token-user-3" }
+    });
+    const previousBody = await previous.json();
+    assert.equal(previousBody.data.status, "COMPLETED");
+
+    await request(`/api/v1/meetings/${body.data.id}/candidates/me`, {
+      method: "PUT",
+      headers: { authorization: "Bearer mock-token-user-3" },
+      body: JSON.stringify({ userPlaceIds: ["up-9"] })
+    });
+    const candidatesResponse = await request(
+      `/api/v1/meetings/${body.data.id}/candidates/me`,
+      {
+        method: "PUT",
+        body: JSON.stringify({ userPlaceIds: ["up-1"] })
+      }
+    );
+    const candidatesBody = await candidatesResponse.json();
+    const selectedCandidateId = candidatesBody.data[0].id;
+
+    await request(`/api/v1/meetings/${body.data.id}/vote`, {
+      method: "POST",
+      headers: { authorization: "Bearer mock-token-user-3" },
+      body: "{}"
+    });
+    for (const accessToken of ["mock-token-user-3", "mock-token-user-1"]) {
+      const sessionResponse = await request(
+        `/api/v1/meetings/${body.data.id}/vote/session`,
+        { headers: { authorization: `Bearer ${accessToken}` } }
+      );
+      const sessionBody = await sessionResponse.json();
+      await request(`/api/v1/meetings/${body.data.id}/vote/choices`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${accessToken}` },
+        body: JSON.stringify({
+          roundNumber: sessionBody.data.round.roundNumber,
+          selectedCandidateId
+        })
+      });
+    }
+    const closed = await request(
+      `/api/v1/meetings/${body.data.id}/vote/close`,
+      {
+        method: "POST",
+        headers: { authorization: "Bearer mock-token-user-3" },
+        body: JSON.stringify({ force: false })
+      }
+    );
+    assert.equal(closed.status, 200);
+
+    const home = await request("/api/v1/me/home", {
+      headers: { authorization: "Bearer mock-token-user-3" }
+    });
+    const homeBody = await home.json();
+    const nextOccurrence = homeBody.data.ongoingMeetings.find(
+      (meeting: { parentMeetingId: string }) =>
+        meeting.parentMeetingId === body.data.id
+    );
+    assert.equal(nextOccurrence.joinCode, "1208");
+    assert.equal(nextOccurrence.meetingAt, "2026-08-10T04:30:00.000Z");
+  });
+
   it("registers a searched NAVER place and returns it from My Places", async () => {
     await store.reset();
     const searchedPlace: Place = {

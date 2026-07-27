@@ -10,6 +10,8 @@ import type {
   Mood,
   Place,
   Purpose,
+  RecurrenceType,
+  RepeatMeetingInput,
   User,
   UserPlace,
   VoteResults,
@@ -34,6 +36,11 @@ export interface MeetingRecord {
   joinCode: string;
   status: MeetingStatus;
   finalCandidateId: string | null;
+  seriesId: string | null;
+  parentMeetingId: string | null;
+  recurrenceType: RecurrenceType | null;
+  recurrenceNextAt: string | null;
+  nextMeetingId: string | null;
   createdAt: string;
   updatedAt: string;
   deletedAt: string | null;
@@ -114,6 +121,40 @@ export class StoreError extends Error {
 
 const iso = (value: string) => new Date(value).toISOString();
 const now = () => new Date().toISOString();
+
+const nextMonthlyMeetingAt = (meetingAt: string) => {
+  const koreaOffsetMs = 9 * 60 * 60 * 1000;
+  const local = new Date(new Date(meetingAt).getTime() + koreaOffsetMs);
+  const year = local.getUTCFullYear();
+  const month = local.getUTCMonth();
+  const day = local.getUTCDate();
+  const lastDay = new Date(Date.UTC(year, month + 2, 0)).getUTCDate();
+  const nextLocal = Date.UTC(
+    year,
+    month + 1,
+    Math.min(day, lastDay),
+    local.getUTCHours(),
+    local.getUTCMinutes()
+  );
+  return new Date(nextLocal - koreaOffsetMs).toISOString();
+};
+
+const nextRecurringMeetingAt = (
+  meetingAt: string,
+  recurrenceType: Exclude<RecurrenceType, "CUSTOM">
+) => {
+  let value =
+    recurrenceType === "WEEKLY"
+      ? new Date(new Date(meetingAt).getTime() + 7 * 24 * 60 * 60 * 1000).toISOString()
+      : nextMonthlyMeetingAt(meetingAt);
+  while (new Date(value).getTime() <= Date.now()) {
+    value =
+      recurrenceType === "WEEKLY"
+        ? new Date(new Date(value).getTime() + 7 * 24 * 60 * 60 * 1000).toISOString()
+        : nextMonthlyMeetingAt(value);
+  }
+  return value;
+};
 
 const seedPlaces: Place[] = [
   {
@@ -272,6 +313,11 @@ export class MockStore {
         joinCode: "4821",
         status: "RECRUITING",
         finalCandidateId: null,
+        seriesId: null,
+        parentMeetingId: null,
+        recurrenceType: null,
+        recurrenceNextAt: null,
+        nextMeetingId: null,
         createdAt: iso("2026-07-20T10:00:00+09:00"),
         updatedAt: iso("2026-07-25T18:10:00+09:00"),
         deletedAt: null
@@ -287,6 +333,11 @@ export class MockStore {
         joinCode: "7314",
         status: "VOTING",
         finalCandidateId: null,
+        seriesId: null,
+        parentMeetingId: null,
+        recurrenceType: null,
+        recurrenceNextAt: null,
+        nextMeetingId: null,
         createdAt: iso("2026-07-18T09:00:00+09:00"),
         updatedAt: iso("2026-07-25T18:20:00+09:00"),
         deletedAt: null
@@ -302,6 +353,11 @@ export class MockStore {
         joinCode: "1208",
         status: "COMPLETED",
         finalCandidateId: "candidate-31",
+        seriesId: null,
+        parentMeetingId: null,
+        recurrenceType: null,
+        recurrenceNextAt: null,
+        nextMeetingId: null,
         createdAt: iso("2026-06-01T10:00:00+09:00"),
         updatedAt: iso("2026-06-10T20:00:00+09:00"),
         deletedAt: null
@@ -689,12 +745,16 @@ export class MockStore {
       .filter((meeting) => meeting.status !== "DELETED" && this.activeMember(meeting.id, userId))
       .map((meeting) => this.toSummary(meeting, userId))
       .sort((a, b) => a.meetingAt.localeCompare(b.meetingAt));
-    const ongoingMeetings = summaries.filter((meeting) => meeting.status !== "COMPLETED");
-    const completedMeetings = summaries.filter((meeting) => meeting.status === "COMPLETED");
+    const ongoingMeetings = summaries.filter(
+      (meeting) => meeting.status !== "COMPLETED" && !meeting.isPastDue
+    );
+    const completedMeetings = summaries
+      .filter((meeting) => meeting.status === "COMPLETED" || meeting.isPastDue)
+      .sort((a, b) => b.meetingAt.localeCompare(a.meetingAt));
     return {
       ongoingMeetings,
       completedMeetings,
-      hasVoteAlert: ongoingMeetings.some((meeting) => meeting.voteAlert),
+      hasVoteAlert: summaries.some((meeting) => meeting.voteAlert),
       updatedAt: now()
     };
   }
@@ -711,6 +771,11 @@ export class MockStore {
       joinCode: this.createJoinCode(),
       status: "RECRUITING",
       finalCandidateId: null,
+      seriesId: null,
+      parentMeetingId: null,
+      recurrenceType: null,
+      recurrenceNextAt: null,
+      nextMeetingId: null,
       createdAt: now(),
       updatedAt: now(),
       deletedAt: null
@@ -718,6 +783,77 @@ export class MockStore {
     this.meetings.push(meeting);
     const user = this.getUser(userId);
     this.members.push(this.member(randomUUID(), meeting.id, userId, user.nickname, "HOST"));
+    return this.detail(meeting.id, userId);
+  }
+
+  repeatMeeting(
+    sourceMeetingId: string,
+    userId: string,
+    input: RepeatMeetingInput
+  ): MeetingDetail {
+    const source = this.requireHost(sourceMeetingId, userId);
+    if (source.status !== "COMPLETED") {
+      throw new StoreError(
+        409,
+        "MEETING_NOT_COMPLETED",
+        "완료된 모임에서만 다시 만나기를 시작할 수 있습니다."
+      );
+    }
+    if (source.nextMeetingId) {
+      throw new StoreError(
+        409,
+        "NEXT_MEETING_ALREADY_EXISTS",
+        "이미 다음 회차가 만들어져 있습니다.",
+        { meetingId: source.nextMeetingId }
+      );
+    }
+
+    const selectedIds = new Set(input.memberIds);
+    const sourceMembers = this.activeMembers(source.id);
+    const selectedMembers = sourceMembers.filter((member) => selectedIds.has(member.id));
+    const hostMember = sourceMembers.find((member) => member.role === "HOST");
+    if (!hostMember || !selectedIds.has(hostMember.id)) {
+      throw new StoreError(
+        422,
+        "HOST_MEMBER_REQUIRED",
+        "모임장은 다음 회차에 반드시 포함되어야 합니다."
+      );
+    }
+    if (selectedMembers.length !== selectedIds.size) {
+      throw new StoreError(
+        422,
+        "INVALID_MEMBER_SELECTION",
+        "이전 모임에 참여한 모임원만 선택할 수 있습니다."
+      );
+    }
+    if (selectedMembers.length > input.capacity) {
+      throw new StoreError(
+        422,
+        "CAPACITY_TOO_SMALL",
+        "선택한 모임원 수보다 정원을 작게 설정할 수 없습니다."
+      );
+    }
+    if (
+      input.recurrence?.type === "CUSTOM" &&
+      (!input.recurrence.customNextMeetingAt ||
+        new Date(input.recurrence.customNextMeetingAt).getTime() <=
+          new Date(input.meetingAt).getTime())
+    ) {
+      throw new StoreError(
+        422,
+        "INVALID_CUSTOM_RECURRENCE_DATE",
+        "직접 입력한 다음 일정은 이번 회차보다 뒤여야 합니다."
+      );
+    }
+
+    const meeting = this.createOccurrence(
+      source,
+      input,
+      selectedMembers,
+      source.seriesId ?? source.id
+    );
+    source.nextMeetingId = meeting.id;
+    source.updatedAt = now();
     return this.detail(meeting.id, userId);
   }
 
@@ -1067,6 +1203,7 @@ export class MockStore {
       vote.status = "CLOSED";
       meeting.status = "COMPLETED";
       meeting.finalCandidateId = results.tiedFirstCandidateIds[0] ?? null;
+      this.createNextRecurringOccurrence(meeting);
     } else {
       vote.status = "FINAL_SELECTION";
       meeting.status = "FINAL_SELECTION";
@@ -1087,7 +1224,79 @@ export class MockStore {
     meeting.updatedAt = now();
     const vote = this.votes.find((item) => item.meetingId === meetingId);
     if (vote) vote.status = "CLOSED";
+    this.createNextRecurringOccurrence(meeting);
     return this.voteResults(meetingId, userId);
+  }
+
+  private createOccurrence(
+    source: MeetingRecord,
+    input: RepeatMeetingInput,
+    selectedMembers: MemberRecord[],
+    seriesId: string
+  ) {
+    const createdAt = now();
+    const meeting: MeetingRecord = {
+      id: randomUUID(),
+      name: input.name,
+      hostUserId: source.hostUserId,
+      capacity: input.capacity,
+      meetingAt: input.meetingAt,
+      purpose: input.purpose,
+      mood: input.mood,
+      joinCode: source.joinCode,
+      status: "RECRUITING",
+      finalCandidateId: null,
+      seriesId,
+      parentMeetingId: source.id,
+      recurrenceType: input.recurrence?.type ?? null,
+      recurrenceNextAt: input.recurrence?.customNextMeetingAt ?? null,
+      nextMeetingId: null,
+      createdAt,
+      updatedAt: createdAt,
+      deletedAt: null
+    };
+    this.meetings.push(meeting);
+    for (const member of selectedMembers) {
+      this.members.push({
+        ...member,
+        id: randomUUID(),
+        meetingId: meeting.id,
+        status: "ACTIVE",
+        joinedAt: createdAt
+      });
+    }
+    return meeting;
+  }
+
+  private createNextRecurringOccurrence(meeting: MeetingRecord) {
+    if (!meeting.recurrenceType || meeting.nextMeetingId) return;
+    const selectedMembers = this.activeMembers(meeting.id);
+    const meetingAt =
+      meeting.recurrenceType === "CUSTOM"
+        ? meeting.recurrenceNextAt
+        : nextRecurringMeetingAt(meeting.meetingAt, meeting.recurrenceType);
+    if (!meetingAt) return;
+
+    const recurrence =
+      meeting.recurrenceType === "CUSTOM"
+        ? null
+        : { type: meeting.recurrenceType };
+    const nextMeeting = this.createOccurrence(
+      meeting,
+      {
+        name: meeting.name,
+        capacity: meeting.capacity,
+        meetingAt,
+        purpose: meeting.purpose,
+        mood: meeting.mood,
+        memberIds: selectedMembers.map((member) => member.id),
+        recurrence
+      },
+      selectedMembers,
+      meeting.seriesId ?? meeting.id
+    );
+    meeting.nextMeetingId = nextMeeting.id;
+    meeting.updatedAt = now();
   }
 
   private activeMembers(meetingId: string) {
@@ -1180,6 +1389,15 @@ export class MockStore {
       voteAlert: meeting.status === "VOTING" && session?.status !== "COMPLETED",
       myVoteCompleted: session?.status === "COMPLETED",
       finalPlace: finalCandidate ? this.getPlace(finalCandidate.placeId) : null,
+      isPastDue: new Date(meeting.meetingAt).getTime() < Date.now(),
+      seriesId: meeting.seriesId,
+      parentMeetingId: meeting.parentMeetingId,
+      recurrence: meeting.recurrenceType
+        ? {
+            type: meeting.recurrenceType,
+            customNextMeetingAt: meeting.recurrenceNextAt
+          }
+        : null,
       updatedAt: meeting.updatedAt
     };
   }

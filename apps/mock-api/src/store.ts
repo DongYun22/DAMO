@@ -648,16 +648,11 @@ export class MockStore {
       const candidate = this.candidates.find(
         (value) => value.meetingId === meetingId && value.placeId === item.place.id
       );
-      const matches = item.purpose === meeting.purpose || item.mood === meeting.mood;
       if (candidate && member) {
         const rec = candidate.recommendations.find((value) => value.memberId === member.id);
-        if (matches && rec) {
+        if (rec) {
           rec.purpose = purpose;
           rec.mood = mood;
-        } else if (!matches) {
-          candidate.recommendations = candidate.recommendations.filter(
-            (value) => value.memberId !== member.id
-          );
         }
       }
       this.cleanupCandidates(meetingId);
@@ -830,8 +825,22 @@ export class MockStore {
         )
     );
     return this.listUserPlaces(userId)
-      .filter((item) => item.purpose === meeting.purpose || item.mood === meeting.mood)
-      .map((item) => ({ ...item, selected: selectedIds.has(item.id) }));
+      .map((item) => {
+        const purposeMatch = item.purpose === meeting.purpose;
+        const moodMatch = item.mood === meeting.mood;
+        return {
+          ...item,
+          selected: selectedIds.has(item.id),
+          purposeMatch,
+          moodMatch,
+          matchCount: Number(purposeMatch) + Number(moodMatch) as 0 | 1 | 2
+        };
+      })
+      .sort(
+        (a, b) =>
+          b.matchCount - a.matchCount ||
+          a.place.name.localeCompare(b.place.name, "ko-KR")
+      );
   }
 
   publicCandidates(meetingId: string, userId: string): Candidate[] {
@@ -866,7 +875,7 @@ export class MockStore {
     const uniqueIds = [...new Set(userPlaceIds)];
     const eligible = new Map(this.eligiblePlaces(meetingId, userId).map((item) => [item.id, item]));
     for (const id of uniqueIds) {
-      if (!eligible.has(id)) throw new StoreError(422, "PLACE_NOT_ELIGIBLE", "모임 목적 또는 성격과 일치하지 않는 장소입니다.");
+      if (!eligible.has(id)) throw new StoreError(422, "PLACE_NOT_FOUND_IN_MY_PLACES", "내 장소에서 선택할 수 없는 장소입니다.");
     }
     for (const candidate of this.candidates.filter((item) => item.meetingId === meetingId)) {
       candidate.recommendations = candidate.recommendations.filter((rec) => rec.memberId !== member.id);

@@ -1686,6 +1686,14 @@ button.candidate-row {
   border-radius: 18px;
 }
 
+.eligible-place--mismatch {
+  opacity: 0.52;
+}
+
+.eligible-place--mismatch:has(.candidate-row[aria-pressed="true"]) {
+  opacity: 0.86;
+}
+
 .match-reasons {
   display: flex;
   gap: 5px;
@@ -1696,6 +1704,16 @@ button.candidate-row {
   padding: 5px 8px;
   color: var(--primary);
   background: var(--primary-soft);
+}
+
+.match-reasons .match-reasons__mismatch {
+  color: var(--ink-soft);
+  background: rgba(173, 184, 187, 0.24);
+}
+
+.candidate-map-link {
+  width: 100%;
+  margin: 0 0 14px;
 }
 
 .sticky-page-action {

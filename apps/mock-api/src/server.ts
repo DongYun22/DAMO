@@ -42,6 +42,21 @@ app.use(
   })
 );
 app.use(express.json());
+app.use((req, res, next) => {
+  const startedAt = performance.now();
+  res.on("finish", () => {
+    const durationMs = Math.round(performance.now() - startedAt);
+    if (durationMs >= 1_000) {
+      console.warn("Slow API request", {
+        method: req.method,
+        path: req.path,
+        status: res.statusCode,
+        durationMs
+      });
+    }
+  });
+  next();
+});
 
 const ok = <T>(res: Response, data: T, status = 200) =>
   res.status(status).json({ data, meta: { updatedAt: new Date().toISOString() } });
@@ -501,7 +516,7 @@ app.use((_req, _res, next) => {
   next(new StoreError(404, "ROUTE_NOT_FOUND", "요청한 API 경로를 찾을 수 없습니다."));
 });
 
-const errorHandler: ErrorRequestHandler = (error, _req, res, _next) => {
+const errorHandler: ErrorRequestHandler = (error, req, res, _next) => {
   if (error instanceof StoreError) {
     res.status(error.status).json({
       error: {
@@ -522,7 +537,16 @@ const errorHandler: ErrorRequestHandler = (error, _req, res, _next) => {
     });
     return;
   }
-  console.error(error);
+  console.error("Unhandled API error", {
+    method: req.method,
+    path: req.path,
+    name: error instanceof Error ? error.name : "UnknownError",
+    message: error instanceof Error ? error.message : String(error),
+    code:
+      typeof error === "object" && error !== null && "code" in error
+        ? String(error.code)
+        : undefined
+  });
   res.status(500).json({
     error: {
       code: "INTERNAL_SERVER_ERROR",

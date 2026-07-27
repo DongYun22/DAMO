@@ -118,6 +118,72 @@ describe("DAMO mock API", () => {
     );
   });
 
+  it("shows every My Place ordered by meeting match and allows a mismatch", async () => {
+    await store.reset();
+    const response = await request(
+      "/api/v1/meetings/meeting-1/eligible-places"
+    );
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.deepEqual(
+      body.data.map(
+        (item: { place: Place; matchCount: number }) => [
+          item.place.name,
+          item.matchCount
+        ]
+      ),
+      [
+        ["서울숲 피자클럽", 2],
+        ["오후의 테라스", 1],
+        ["호호식당 성수", 1],
+        ["커먼 라운지", 0],
+        ["페이지 스터디라운지", 0]
+      ]
+    );
+
+    const selected = await request(
+      "/api/v1/meetings/meeting-1/candidates/me",
+      {
+        method: "PUT",
+        body: JSON.stringify({ userPlaceIds: ["up-4"] })
+      }
+    );
+    assert.equal(selected.status, 200);
+    const selectedBody = await selected.json();
+    assert.equal(
+      selectedBody.data.some(
+        (candidate: { place: Place; recommendedByMe: boolean }) =>
+          candidate.place.id === "place-4" && candidate.recommendedByMe
+      ),
+      true
+    );
+  });
+
+  it("keeps a selected candidate when its purpose and mood no longer match", async () => {
+    await store.reset();
+    const updated = await request("/api/v1/me/places/up-2", {
+      method: "PATCH",
+      body: JSON.stringify({
+        purpose: "STUDY",
+        mood: "BUSINESS",
+        applyToMeetingIds: ["meeting-1"]
+      })
+    });
+    assert.equal(updated.status, 200);
+
+    const candidates = await request(
+      "/api/v1/meetings/meeting-1/candidates"
+    );
+    const body = await candidates.json();
+    assert.equal(
+      body.data.some(
+        (candidate: { place: Place; recommendedByMe: boolean }) =>
+          candidate.place.id === "place-2" && candidate.recommendedByMe
+      ),
+      true
+    );
+  });
+
   it("runs the current user's N-1 vote and removes the alert", async () => {
     await store.reset();
     const first = await request("/api/v1/meetings/meeting-2/vote/session");

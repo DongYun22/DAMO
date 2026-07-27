@@ -45,6 +45,13 @@ export interface UserPlace {
   updatedAt: string;
 }
 
+export interface EligiblePlace extends UserPlace {
+  selected: boolean;
+  purposeMatch: boolean;
+  moodMatch: boolean;
+  matchCount: 0 | 1 | 2;
+}
+
 export interface MeetingMember {
   id: string;
   userId: string;

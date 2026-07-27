@@ -30,6 +30,7 @@ import {
 import type {
   Candidate,
   CreateMeetingInput,
+  EligiblePlace,
   MeetingDetail,
   Mood,
   Place,
@@ -371,6 +372,10 @@ export function HomePage() {
 
 export function MapPage() {
   const { showToast } = useShell();
+  const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const meetingId = searchParams.get("meetingId") ?? "";
+  const candidatePath = meetingId ? `/meetings/${meetingId}/candidates` : "";
   const [query, setQuery] = useState("성수역");
   const [places, setPlaces] = useState<Place[]>([]);
   const [saved, setSaved] = useState<UserPlace[]>([]);
@@ -379,6 +384,9 @@ export function MapPage() {
   const [mood, setMood] = useState<Mood>("FUN");
   const [registerOpen, setRegisterOpen] = useState(false);
   const [unregisterOpen, setUnregisterOpen] = useState(false);
+  const [candidatePrompt, setCandidatePrompt] = useState<"ASK" | "LIMIT" | null>(null);
+  const [pendingUserPlaceId, setPendingUserPlaceId] = useState("");
+  const [existingCandidateIds, setExistingCandidateIds] = useState<string[]>([]);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   const [suggestions, setSuggestions] = useState<Place[]>([]);
@@ -490,7 +498,7 @@ export function MapPage() {
     if (!selected) return;
     setError("");
     try {
-      await api("/me/places", {
+      const registered = await api<UserPlace>("/me/places", {
         method: "POST",
         body: JSON.stringify({
           naverPlaceId: selected.naverPlaceId,
@@ -500,9 +508,54 @@ export function MapPage() {
       });
       await loadSaved();
       setRegisterOpen(false);
-      showToast("내 장소에 저장했어요.");
+      if (!meetingId) {
+        showToast("내 장소에 저장했어요.");
+        return;
+      }
+      const eligible = await api<EligiblePlace[]>(
+        `/meetings/${meetingId}/eligible-places`
+      );
+      const selectedCandidateIds = eligible
+        .filter((item) => item.selected)
+        .map((item) => item.id);
+      setPendingUserPlaceId(registered.id);
+      setExistingCandidateIds(selectedCandidateIds);
+      setCandidatePrompt(
+        selectedCandidateIds.includes(registered.id)
+          ? null
+          : selectedCandidateIds.length >= 2
+            ? "LIMIT"
+            : "ASK"
+      );
+      if (selectedCandidateIds.includes(registered.id)) {
+        showToast("이미 현재 모임의 후보로 등록된 장소예요.");
+        navigate(candidatePath, { replace: true });
+      }
     } catch (reason) {
       setError(errorMessage(reason));
+    }
+  };
+
+  const returnToCandidates = () => {
+    setCandidatePrompt(null);
+    navigate(candidatePath, { replace: true });
+  };
+
+  const addToCurrentMeeting = async () => {
+    if (!meetingId || !pendingUserPlaceId) return;
+    setError("");
+    try {
+      await api(`/meetings/${meetingId}/candidates/me`, {
+        method: "PUT",
+        body: JSON.stringify({
+          userPlaceIds: [...existingCandidateIds, pendingUserPlaceId]
+        })
+      });
+      showToast("현재 모임의 후보로 추가했어요.");
+      returnToCandidates();
+    } catch (reason) {
+      setError(errorMessage(reason));
+      setCandidatePrompt(null);
     }
   };
 
@@ -523,7 +576,15 @@ export function MapPage() {
 
   return (
     <div className="page page--map">
-      <ScreenHeader title="장소 탐색" description="역 주변에서 관심 장소를 찾아보세요." back={false} />
+      <ScreenHeader
+        title="장소 탐색"
+        description={
+          meetingId
+            ? "새 장소를 내 장소에 저장한 뒤 현재 모임 후보로 추가할 수 있어요."
+            : "역 주변에서 관심 장소를 찾아보세요."
+        }
+        back={Boolean(meetingId)}
+      />
       <SearchInput
         value={query}
         onChange={setQuery}
@@ -628,6 +689,33 @@ export function MapPage() {
             이번 투표 후보도 취소
           </PrimaryButton>
         </div>
+      </Modal>
+
+      <Modal
+        open={candidatePrompt === "ASK"}
+        title="내 장소에 추가되었어요."
+        description="현재 모임에도 후보로 등록할까요?"
+        onClose={returnToCandidates}
+      >
+        <div className="modal-actions">
+          <SecondaryButton type="button" onClick={returnToCandidates}>
+            다음에
+          </SecondaryButton>
+          <PrimaryButton type="button" onClick={() => void addToCurrentMeeting()}>
+            추가하기
+          </PrimaryButton>
+        </div>
+      </Modal>
+
+      <Modal
+        open={candidatePrompt === "LIMIT"}
+        title="이미 후보 2개가 등록되어 있어요."
+        description="모임 페이지에서 후보를 변경해 주세요."
+        onClose={returnToCandidates}
+      >
+        <PrimaryButton type="button" onClick={returnToCandidates}>
+          확인
+        </PrimaryButton>
       </Modal>
     </div>
   );
@@ -1044,8 +1132,6 @@ export function JoinMeetingPage() {
   );
 }
 
-type EligiblePlace = UserPlace & { selected: boolean };
-
 export function CandidateSelectPage() {
   const { meetingId = "" } = useParams();
   const navigate = useNavigate();
@@ -1120,24 +1206,39 @@ export function CandidateSelectPage() {
           <strong>{selectedIds.length}</strong>
           <span>/ 2곳 선택</span>
         </div>
-        <p>모임 목적 또는 성격 중 하나만 일치해도 보여요.</p>
+        <p>
+          해당 모임은 [{meeting ? PURPOSE_LABELS[meeting.purpose] : ""}]
+          [{meeting ? MOOD_LABELS[meeting.mood] : ""}] 성격의 모임이에요.
+        </p>
       </div>
       <InlineError message={error} />
       {places.length ? (
+        <Link
+          className="button button--secondary candidate-map-link"
+          to={`/map?meetingId=${encodeURIComponent(meetingId)}`}
+        >
+          <MapPin size={18} /> 지도에서 새 장소 찾기
+        </Link>
+      ) : null}
+      {places.length ? (
         <div className="candidate-select-list">
           {places.map((item) => {
-            const purposeMatch = meeting?.purpose === item.purpose;
-            const moodMatch = meeting?.mood === item.mood;
             return (
-              <div key={item.id} className="eligible-place">
+              <div
+                key={item.id}
+                className={`eligible-place ${
+                  item.matchCount === 0 ? "eligible-place--mismatch" : ""
+                }`}
+              >
                 <UserPlaceRow
                   item={item}
                   selected={selectedIds.includes(item.id)}
                   onClick={() => toggle(item.id)}
                 />
                 <div className="match-reasons">
-                  {purposeMatch ? <span>목적 일치 · {PURPOSE_LABELS[item.purpose]}</span> : null}
-                  {moodMatch ? <span>성격 일치 · {MOOD_LABELS[item.mood]}</span> : null}
+                  {item.purposeMatch ? <span>목적 일치 · {PURPOSE_LABELS[item.purpose]}</span> : null}
+                  {item.moodMatch ? <span>성격 일치 · {MOOD_LABELS[item.mood]}</span> : null}
+                  {item.matchCount === 0 ? <span className="match-reasons__mismatch">조건 불일치</span> : null}
                 </div>
               </div>
             );
@@ -1145,9 +1246,16 @@ export function CandidateSelectPage() {
         </div>
       ) : (
         <EmptyState
-          title="조건에 맞는 내 장소가 없어요"
-          description="후보를 고르지 않고 넘어가거나 지도에서 장소를 더 저장할 수 있어요."
-          action={<Link className="button button--secondary" to="/map">지도에서 찾기</Link>}
+          title="저장된 내 장소가 없어요"
+          description="지도에서 장소를 저장한 뒤 현재 모임 후보로 바로 추가할 수 있어요."
+          action={
+            <Link
+              className="button button--secondary"
+              to={`/map?meetingId=${encodeURIComponent(meetingId)}`}
+            >
+              지도에서 새 장소 찾기
+            </Link>
+          }
         />
       )}
       <div className="sticky-page-action">

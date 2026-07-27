@@ -1,11 +1,17 @@
 import { randomUUID } from "node:crypto";
 import { compare, hash } from "bcryptjs";
 import type {
+  Candidate,
   CreateMeetingInput,
+  EligiblePlace,
+  HomeData,
+  MeetingDetail,
+  MeetingStatus,
   Mood,
   Place,
   Purpose,
-  User
+  User,
+  UserPlace
 } from "@damo/contracts";
 import type { Pool, PoolClient } from "pg";
 import { createDatabasePool } from "./database.js";
@@ -33,8 +39,94 @@ const nullableTimestamp = (value: unknown) =>
 
 const hasBcryptHash = (value: string) => /^\$2[aby]\$\d{2}\$/.test(value);
 
+interface PlaceRow {
+  id: string;
+  naverPlaceId: string;
+  name: string;
+  category: string;
+  address: string;
+  roadAddress: string;
+  latitude: number;
+  longitude: number;
+  station: string;
+  distanceText: string;
+  imageUrl: string | null;
+}
+
+interface UserPlaceRow extends PlaceRow {
+  userPlaceId: string;
+  userId: string;
+  purpose: Purpose;
+  mood: Mood;
+  isActive: boolean;
+  createdAt: Date | string;
+  updatedAt: Date | string;
+}
+
+const placeFromRow = (row: PlaceRow): Place => ({
+  id: row.id,
+  naverPlaceId: row.naverPlaceId,
+  name: row.name,
+  category: row.category,
+  address: row.address,
+  roadAddress: row.roadAddress,
+  latitude: row.latitude,
+  longitude: row.longitude,
+  station: row.station,
+  distanceText: row.distanceText,
+  ...(row.imageUrl ? { imageUrl: row.imageUrl } : {})
+});
+
+const userPlaceFromRow = (row: UserPlaceRow): UserPlace => ({
+  id: row.userPlaceId,
+  userId: row.userId,
+  place: placeFromRow(row),
+  purpose: row.purpose,
+  mood: row.mood,
+  isActive: row.isActive,
+  createdAt: timestamp(row.createdAt),
+  updatedAt: timestamp(row.updatedAt)
+});
+
 export class PostgresStore {
   constructor(private readonly pool: Pool = createDatabasePool()) {}
+
+  private async queryUserPlaces(
+    userId: string,
+    userPlaceId?: string
+  ): Promise<UserPlace[]> {
+    const result = await this.pool.query<UserPlaceRow>(
+      `
+        select
+          up.id as "userPlaceId",
+          up.user_id as "userId",
+          up.purpose,
+          up.mood,
+          up.is_active as "isActive",
+          up.created_at as "createdAt",
+          up.updated_at as "updatedAt",
+          p.id,
+          p.naver_place_id as "naverPlaceId",
+          p.name,
+          p.category,
+          p.address,
+          p.road_address as "roadAddress",
+          p.latitude,
+          p.longitude,
+          p.station,
+          p.distance_text as "distanceText",
+          p.image_url as "imageUrl"
+        from user_places up
+        join places p on p.id = up.place_id
+        where up.user_id = $1
+          and up.is_active = true
+          and ($2::text is null or up.id = $2)
+        order by up.updated_at desc
+      `,
+      [userId, userPlaceId ?? null]
+    );
+    return result.rows.map(userPlaceFromRow);
+  }
 
   private async loadSnapshot(client: PoolClient): Promise<StoreSnapshot> {
     const usersResult = await client.query<{
@@ -687,15 +779,63 @@ export class PostgresStore {
   }
 
   async getPlace(id: string) {
-    return this.read((store) => store.getPlace(id));
+    const result = await this.pool.query<PlaceRow>(
+      `
+        select
+          id,
+          naver_place_id as "naverPlaceId",
+          name,
+          category,
+          address,
+          road_address as "roadAddress",
+          latitude,
+          longitude,
+          station,
+          distance_text as "distanceText",
+          image_url as "imageUrl"
+        from places
+        where id = $1 or naver_place_id = $1
+        limit 1
+      `,
+      [id]
+    );
+    const row = result.rows[0];
+    if (!row) throw new StoreError(404, "PLACE_NOT_FOUND", "장소를 찾을 수 없습니다.");
+    return placeFromRow(row);
   }
 
   async getUser(userId: string) {
-    return this.read((store) => store.getUser(userId));
+    const result = await this.pool.query<{
+      id: string;
+      loginProvider: User["loginProvider"];
+      nickname: string;
+      email: string | null;
+    }>(
+      `
+        select
+          id,
+          login_provider as "loginProvider",
+          nickname,
+          email
+        from users
+        where id = $1
+      `,
+      [userId]
+    );
+    const user = result.rows[0];
+    if (!user) throw new StoreError(401, "AUTH_REQUIRED", "로그인이 필요합니다.");
+    return user;
   }
 
   async userIdForToken(token: string | undefined) {
-    return this.read((store) => store.userIdForToken(token));
+    if (!token) throw new StoreError(401, "INVALID_TOKEN", "로그인 정보가 만료되었습니다.");
+    const result = await this.pool.query<{ userId: string }>(
+      `select user_id as "userId" from auth_sessions where access_token = $1`,
+      [token]
+    );
+    const userId = result.rows[0]?.userId;
+    if (!userId) throw new StoreError(401, "INVALID_TOKEN", "로그인 정보가 만료되었습니다.");
+    return userId;
   }
 
   async signup(
@@ -704,82 +844,191 @@ export class PostgresStore {
     password: string,
     email?: string | null
   ) {
-    return this.write(async (store) => {
-      if (
-        store.users.some(
-          (user) => user.loginId.toLowerCase() === loginId.toLowerCase()
-        )
-      ) {
-        throw new StoreError(
-          409,
-          "LOGIN_ID_ALREADY_EXISTS",
-          "이미 사용 중인 아이디입니다."
-        );
-      }
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
       const id = randomUUID();
-      const user: UserRecord = {
-        id,
-        loginId,
-        password: await hash(password, 12),
-        nickname,
-        email: email ?? null,
-        loginProvider: "TEST"
-      };
-      store.users.push(user);
       const accessToken = `mock-token-${id}`;
-      store.tokens.set(accessToken, id);
-      const safeUser: User = {
-        id,
-        loginProvider: user.loginProvider,
-        nickname: user.nickname,
-        email: user.email
-      };
-      return {
-        user: safeUser,
-        accessToken,
-        refreshToken: `mock-refresh-${id}`
-      };
-    });
+      const refreshToken = `mock-refresh-${id}`;
+      const result = await client.query<{
+        id: string;
+        loginProvider: User["loginProvider"];
+        nickname: string;
+        email: string | null;
+      }>(
+        `
+          insert into users (
+            id, login_provider, login_id, password_hash, nickname, email
+          )
+          values ($1, 'TEST', $2, $3, $4, $5)
+          returning
+            id,
+            login_provider as "loginProvider",
+            nickname,
+            email
+        `,
+        [id, loginId, await hash(password, 12), nickname, email ?? null]
+      );
+      await client.query(
+        `
+          insert into auth_sessions (access_token, refresh_token, user_id)
+          values ($1, $2, $3)
+        `,
+        [accessToken, refreshToken, id]
+      );
+      await client.query("commit");
+      return { user: result.rows[0]!, accessToken, refreshToken };
+    } catch (error) {
+      await client.query("rollback");
+      if (
+        typeof error === "object" &&
+        error !== null &&
+        "code" in error &&
+        error.code === "23505"
+      ) {
+        throw new StoreError(409, "LOGIN_ID_ALREADY_EXISTS", "이미 사용 중인 아이디입니다.");
+      }
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   async login(loginId: string, password: string) {
-    return this.write(async (store) => {
-      const user = store.users.find(
-        (item) => item.loginId.toLowerCase() === loginId.toLowerCase()
+    const result = await this.pool.query<{
+      id: string;
+      loginProvider: User["loginProvider"];
+      password: string;
+      nickname: string;
+      email: string | null;
+    }>(
+      `
+        select
+          id,
+          login_provider as "loginProvider",
+          coalesce(password_hash, '') as password,
+          nickname,
+          email
+        from users
+        where login_provider = 'TEST' and lower(login_id) = lower($1)
+      `,
+      [loginId]
+    );
+    const row = result.rows[0];
+    if (!row || !(await compare(password, row.password))) {
+      throw new StoreError(
+        401,
+        "INVALID_CREDENTIALS",
+        "아이디 또는 비밀번호가 올바르지 않습니다."
       );
-      if (!user || !(await compare(password, user.password))) {
-        throw new StoreError(
-          401,
-          "INVALID_CREDENTIALS",
-          "아이디 또는 비밀번호가 올바르지 않습니다."
-        );
-      }
-      const accessToken = `mock-token-${user.id}`;
-      store.tokens.set(accessToken, user.id);
-      const safeUser: User = {
-        id: user.id,
-        loginProvider: user.loginProvider,
-        nickname: user.nickname,
-        email: user.email
-      };
-      return {
-        user: safeUser,
-        accessToken,
-        refreshToken: `mock-refresh-${user.id}`
-      };
-    });
+    }
+    const accessToken = `mock-token-${row.id}`;
+    const refreshToken = `mock-refresh-${row.id}`;
+    await this.pool.query(
+      `
+        insert into auth_sessions (access_token, refresh_token, user_id)
+        values ($1, $2, $3)
+        on conflict (access_token) do update set
+          refresh_token = excluded.refresh_token,
+          user_id = excluded.user_id,
+          created_at = now()
+      `,
+      [accessToken, refreshToken, row.id]
+    );
+    const user: User = {
+      id: row.id,
+      loginProvider: row.loginProvider,
+      nickname: row.nickname,
+      email: row.email
+    };
+    return { user, accessToken, refreshToken };
   }
 
   async searchPlaces(query: string) {
-    return this.read((store) => store.searchPlaces(query));
+    const normalized = query.trim().replace(/역$/, "");
+    const result = await this.pool.query<PlaceRow>(
+      `
+        select
+          id,
+          naver_place_id as "naverPlaceId",
+          name,
+          category,
+          address,
+          road_address as "roadAddress",
+          latitude,
+          longitude,
+          station,
+          distance_text as "distanceText",
+          image_url as "imageUrl"
+        from places
+        where $1 = ''
+          or concat_ws(' ', name, station, category, address, road_address)
+            ilike '%' || $1 || '%'
+        order by name collate "C"
+      `,
+      [normalized]
+    );
+    return result.rows.map(placeFromRow);
   }
 
   async upsertPlaces(items: Place[]) {
-    return this.write((store) => store.upsertPlaces(items));
+    if (items.length === 0) return [];
+    const values: unknown[] = [];
+    const tuples = items.map((item, index) => {
+      const offset = index * 11;
+      values.push(
+        item.id,
+        item.naverPlaceId,
+        item.name,
+        item.category,
+        item.address,
+        item.roadAddress,
+        item.latitude,
+        item.longitude,
+        item.station,
+        item.distanceText,
+        item.imageUrl ?? null
+      );
+      return `(${Array.from({ length: 11 }, (_, valueIndex) => `$${offset + valueIndex + 1}`).join(", ")})`;
+    });
+    const result = await this.pool.query<PlaceRow>(
+      `
+        insert into places (
+          id, naver_place_id, name, category, address, road_address,
+          latitude, longitude, station, distance_text, image_url
+        )
+        values ${tuples.join(", ")}
+        on conflict (naver_place_id) do update set
+          name = excluded.name,
+          category = excluded.category,
+          address = excluded.address,
+          road_address = excluded.road_address,
+          latitude = excluded.latitude,
+          longitude = excluded.longitude,
+          station = excluded.station,
+          distance_text = excluded.distance_text,
+          image_url = coalesce(excluded.image_url, places.image_url),
+          updated_at = now()
+        returning
+          id,
+          naver_place_id as "naverPlaceId",
+          name,
+          category,
+          address,
+          road_address as "roadAddress",
+          latitude,
+          longitude,
+          station,
+          distance_text as "distanceText",
+          image_url as "imageUrl"
+      `,
+      values
+    );
+    return result.rows.map(placeFromRow);
   }
 
   async listUserPlaces(userId: string) {
-    return this.read((store) => store.listUserPlaces(userId));
+    return this.queryUserPlaces(userId);
   }
 
   async registerUserPlace(
@@ -788,9 +1037,28 @@ export class PostgresStore {
     purpose: Purpose,
     mood: Mood
   ) {
-    return this.write((store) =>
-      store.registerUserPlace(userId, naverPlaceId, purpose, mood)
+    const result = await this.pool.query<{ userPlaceId: string }>(
+      `
+        insert into user_places (
+          id, user_id, place_id, purpose, mood, is_active
+        )
+        select $1, $2, p.id, $4, $5, true
+        from places p
+        where p.naver_place_id = $3
+        on conflict (user_id, place_id) do update set
+          purpose = excluded.purpose,
+          mood = excluded.mood,
+          is_active = true,
+          updated_at = now()
+        returning id as "userPlaceId"
+      `,
+      [randomUUID(), userId, naverPlaceId, purpose, mood]
     );
+    const userPlaceId = result.rows[0]?.userPlaceId;
+    if (!userPlaceId) throw new StoreError(404, "PLACE_NOT_FOUND", "장소를 찾을 수 없습니다.");
+    const item = (await this.queryUserPlaces(userId, userPlaceId))[0];
+    if (!item) throw new StoreError(500, "USER_PLACE_SAVE_FAILED", "내 장소 저장 결과를 찾을 수 없습니다.");
+    return item;
   }
 
   async updateUserPlace(
@@ -826,7 +1094,129 @@ export class PostgresStore {
   }
 
   async home(userId: string) {
-    return this.read((store) => store.home(userId));
+    const result = await this.pool.query<{
+      id: string;
+      name: string;
+      role: "HOST" | "MEMBER";
+      status: MeetingStatus;
+      purpose: Purpose;
+      mood: Mood;
+      meetingAt: Date | string;
+      currentMembers: number;
+      capacity: number;
+      joinCode: string;
+      sessionStatus: VoteSessionRecord["status"] | null;
+      updatedAt: Date | string;
+      finalId: string | null;
+      finalNaverPlaceId: string | null;
+      finalName: string | null;
+      finalCategory: string | null;
+      finalAddress: string | null;
+      finalRoadAddress: string | null;
+      finalLatitude: number | null;
+      finalLongitude: number | null;
+      finalStation: string | null;
+      finalDistanceText: string | null;
+      finalImageUrl: string | null;
+    }>(
+      `
+        select
+          m.id,
+          m.name,
+          mine.role,
+          m.status,
+          m.purpose,
+          m.mood,
+          m.meeting_at as "meetingAt",
+          (
+            select count(*)::int
+            from meeting_members active_member
+            where active_member.meeting_id = m.id
+              and active_member.status = 'ACTIVE'
+          ) as "currentMembers",
+          m.capacity,
+          m.join_code as "joinCode",
+          session.status as "sessionStatus",
+          m.updated_at as "updatedAt",
+          final_place.id as "finalId",
+          final_place.naver_place_id as "finalNaverPlaceId",
+          final_place.name as "finalName",
+          final_place.category as "finalCategory",
+          final_place.address as "finalAddress",
+          final_place.road_address as "finalRoadAddress",
+          final_place.latitude as "finalLatitude",
+          final_place.longitude as "finalLongitude",
+          final_place.station as "finalStation",
+          final_place.distance_text as "finalDistanceText",
+          final_place.image_url as "finalImageUrl"
+        from meeting_members mine
+        join meetings m on m.id = mine.meeting_id
+        left join vote_sessions session
+          on session.meeting_id = m.id and session.user_id = mine.user_id
+        left join meeting_candidates final_candidate
+          on final_candidate.id = m.final_candidate_id
+        left join places final_place on final_place.id = final_candidate.place_id
+        where mine.user_id = $1
+          and mine.status = 'ACTIVE'
+          and m.status <> 'DELETED'
+        order by m.meeting_at
+      `,
+      [userId]
+    );
+    const summaries = result.rows.map((row) => {
+      const myVoteCompleted = row.sessionStatus === "COMPLETED";
+      return {
+        id: row.id,
+        name: row.name,
+        role: row.role,
+        status: row.status,
+        purpose: row.purpose,
+        mood: row.mood,
+        meetingAt: timestamp(row.meetingAt),
+        currentMembers: row.currentMembers,
+        capacity: row.capacity,
+        ...(row.role === "HOST" ? { joinCode: row.joinCode } : {}),
+        voteAlert: row.status === "VOTING" && !myVoteCompleted,
+        myVoteCompleted,
+        finalPlace:
+          row.finalId &&
+          row.finalNaverPlaceId &&
+          row.finalName &&
+          row.finalCategory &&
+          row.finalAddress &&
+          row.finalRoadAddress &&
+          row.finalLatitude !== null &&
+          row.finalLongitude !== null
+            ? {
+                id: row.finalId,
+                naverPlaceId: row.finalNaverPlaceId,
+                name: row.finalName,
+                category: row.finalCategory,
+                address: row.finalAddress,
+                roadAddress: row.finalRoadAddress,
+                latitude: row.finalLatitude,
+                longitude: row.finalLongitude,
+                station: row.finalStation ?? "",
+                distanceText: row.finalDistanceText ?? "",
+                ...(row.finalImageUrl ? { imageUrl: row.finalImageUrl } : {})
+              }
+            : null,
+        updatedAt: timestamp(row.updatedAt)
+      };
+    });
+    const ongoingMeetings = summaries.filter(
+      (meeting) => meeting.status !== "COMPLETED"
+    );
+    const completedMeetings = summaries.filter(
+      (meeting) => meeting.status === "COMPLETED"
+    );
+    const data: HomeData = {
+      ongoingMeetings,
+      completedMeetings,
+      hasVoteAlert: ongoingMeetings.some((meeting) => meeting.voteAlert),
+      updatedAt: new Date().toISOString()
+    };
+    return data;
   }
 
   async createMeeting(userId: string, input: CreateMeetingInput) {
@@ -849,7 +1239,68 @@ export class PostgresStore {
   }
 
   async detail(meetingId: string, userId: string) {
-    return this.read((store) => store.detail(meetingId, userId));
+    const home = await this.home(userId);
+    const summary = [...home.ongoingMeetings, ...home.completedMeetings].find(
+      (meeting) => meeting.id === meetingId
+    );
+    if (!summary) {
+      throw new StoreError(403, "MEETING_ACCESS_DENIED", "이 모임에 참여하고 있지 않습니다.");
+    }
+    const [meetingResult, memberResult, candidates] = await Promise.all([
+      this.pool.query<{
+        hostUserId: string;
+        joinCode: string;
+        finalCandidateId: string | null;
+      }>(
+        `
+          select
+            host_user_id as "hostUserId",
+            join_code as "joinCode",
+            final_candidate_id as "finalCandidateId"
+          from meetings
+          where id = $1
+        `,
+        [meetingId]
+      ),
+      this.pool.query<{
+        id: string;
+        userId: string;
+        meetingNickname: string;
+        role: "HOST" | "MEMBER";
+        status: "ACTIVE" | "LEFT" | "KICKED";
+        joinedAt: Date | string;
+      }>(
+        `
+          select
+            id,
+            user_id as "userId",
+            meeting_nickname as "meetingNickname",
+            role,
+            status,
+            joined_at as "joinedAt"
+          from meeting_members
+          where meeting_id = $1 and status = 'ACTIVE'
+          order by case when role = 'HOST' then 0 else 1 end, joined_at
+        `,
+        [meetingId]
+      ),
+      this.publicCandidates(meetingId, userId)
+    ]);
+    const meeting = meetingResult.rows[0];
+    if (!meeting) throw new StoreError(404, "MEETING_NOT_FOUND", "모임을 찾을 수 없습니다.");
+    const detail: MeetingDetail = {
+      ...summary,
+      hostUserId: meeting.hostUserId,
+      joinCode: meeting.joinCode,
+      shareUrl: `http://localhost:5173/meetings/join?meetingId=${meetingId}`,
+      members: memberResult.rows.map((member) => ({
+        ...member,
+        joinedAt: timestamp(member.joinedAt)
+      })),
+      candidates,
+      finalCandidateId: meeting.finalCandidateId
+    };
+    return detail;
   }
 
   async leaveMeeting(meetingId: string, userId: string) {
@@ -867,11 +1318,162 @@ export class PostgresStore {
   }
 
   async eligiblePlaces(meetingId: string, userId: string) {
-    return this.read((store) => store.eligiblePlaces(meetingId, userId));
+    const result = await this.pool.query<
+      UserPlaceRow & {
+        selected: boolean;
+        purposeMatch: boolean;
+        moodMatch: boolean;
+      }
+    >(
+      `
+        with meeting_context as (
+          select
+            m.purpose,
+            m.mood,
+            member.id as member_id
+          from meetings m
+          join meeting_members member
+            on member.meeting_id = m.id
+            and member.user_id = $2
+            and member.status = 'ACTIVE'
+          where m.id = $1 and m.status <> 'DELETED'
+        )
+        select
+          up.id as "userPlaceId",
+          up.user_id as "userId",
+          up.purpose,
+          up.mood,
+          up.is_active as "isActive",
+          up.created_at as "createdAt",
+          up.updated_at as "updatedAt",
+          p.id,
+          p.naver_place_id as "naverPlaceId",
+          p.name,
+          p.category,
+          p.address,
+          p.road_address as "roadAddress",
+          p.latitude,
+          p.longitude,
+          p.station,
+          p.distance_text as "distanceText",
+          p.image_url as "imageUrl",
+          up.purpose = context.purpose as "purposeMatch",
+          up.mood = context.mood as "moodMatch",
+          exists (
+            select 1
+            from candidate_recommendations recommendation
+            join meeting_candidates candidate
+              on candidate.id = recommendation.candidate_id
+            where candidate.meeting_id = $1
+              and recommendation.member_id = context.member_id
+              and recommendation.user_place_id = up.id
+          ) as selected
+        from user_places up
+        join places p on p.id = up.place_id
+        cross join meeting_context context
+        where up.user_id = $2 and up.is_active = true
+      `,
+      [meetingId, userId]
+    );
+    if (result.rows.length === 0) {
+      const access = await this.pool.query(
+        `
+          select 1
+          from meetings m
+          join meeting_members member
+            on member.meeting_id = m.id
+            and member.user_id = $2
+            and member.status = 'ACTIVE'
+          where m.id = $1 and m.status <> 'DELETED'
+        `,
+        [meetingId, userId]
+      );
+      if (access.rowCount === 0) {
+        throw new StoreError(403, "MEETING_ACCESS_DENIED", "모임원이 아닙니다.");
+      }
+    }
+    return result.rows
+      .map((row): EligiblePlace => {
+        const matchCount = Number(row.purposeMatch) + Number(row.moodMatch) as 0 | 1 | 2;
+        return {
+          ...userPlaceFromRow(row),
+          selected: row.selected,
+          purposeMatch: row.purposeMatch,
+          moodMatch: row.moodMatch,
+          matchCount
+        };
+      })
+      .sort(
+        (a, b) =>
+          b.matchCount - a.matchCount ||
+          a.place.name.localeCompare(b.place.name, "ko-KR")
+      );
   }
 
   async publicCandidates(meetingId: string, userId: string) {
-    return this.read((store) => store.publicCandidates(meetingId, userId));
+    const access = await this.pool.query(
+      `
+        select 1
+        from meeting_members
+        where meeting_id = $1 and user_id = $2 and status = 'ACTIVE'
+      `,
+      [meetingId, userId]
+    );
+    if (access.rowCount === 0) {
+      throw new StoreError(403, "MEETING_ACCESS_DENIED", "모임원이 아닙니다.");
+    }
+    const result = await this.pool.query<
+      PlaceRow & {
+        candidateId: string;
+        meetingId: string;
+        isFrozen: boolean;
+        recommendationCount: number;
+        recommendedByMe: boolean;
+        recommenderNames: string[];
+      }
+    >(
+      `
+        select
+          candidate.id as "candidateId",
+          candidate.meeting_id as "meetingId",
+          candidate.is_frozen as "isFrozen",
+          count(recommendation.member_id)::int as "recommendationCount",
+          bool_or(member.user_id = $2) as "recommendedByMe",
+          array_agg(member.meeting_nickname order by member.meeting_nickname)
+            as "recommenderNames",
+          p.id,
+          p.naver_place_id as "naverPlaceId",
+          p.name,
+          p.category,
+          p.address,
+          p.road_address as "roadAddress",
+          p.latitude,
+          p.longitude,
+          p.station,
+          p.distance_text as "distanceText",
+          p.image_url as "imageUrl"
+        from meeting_candidates candidate
+        join candidate_recommendations recommendation
+          on recommendation.candidate_id = candidate.id
+        join meeting_members member on member.id = recommendation.member_id
+        join places p on p.id = candidate.place_id
+        where candidate.meeting_id = $1
+        group by candidate.id, p.id
+        order by p.name collate "C"
+      `,
+      [meetingId, userId]
+    );
+    return result.rows.map(
+      (row): Candidate => ({
+        id: row.candidateId,
+        meetingId: row.meetingId,
+        place: placeFromRow(row),
+        recommendationCount: row.recommendationCount,
+        recommendedByMe: row.recommendedByMe,
+        recommenderNames: row.recommenderNames,
+        isFrozen: row.isFrozen
+      })
+    );
   }
 
   async replaceMyCandidates(
@@ -879,9 +1481,125 @@ export class PostgresStore {
     userId: string,
     userPlaceIds: string[]
   ) {
-    return this.write((store) =>
-      store.replaceMyCandidates(meetingId, userId, userPlaceIds)
-    );
+    const uniqueIds = [...new Set(userPlaceIds)];
+    if (uniqueIds.length > 2) {
+      throw new StoreError(422, "CANDIDATE_LIMIT_EXCEEDED", "후보는 최대 2개까지 선택할 수 있습니다.");
+    }
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      await client.query(
+        "select pg_advisory_xact_lock(hashtext($1))",
+        [`candidate:${meetingId}`]
+      );
+      const context = await client.query<{
+        status: MeetingStatus;
+        memberId: string;
+      }>(
+        `
+          select m.status, member.id as "memberId"
+          from meetings m
+          join meeting_members member
+            on member.meeting_id = m.id
+            and member.user_id = $2
+            and member.status = 'ACTIVE'
+          where m.id = $1 and m.status <> 'DELETED'
+        `,
+        [meetingId, userId]
+      );
+      const meeting = context.rows[0];
+      if (!meeting) {
+        throw new StoreError(403, "MEETING_ACCESS_DENIED", "모임원이 아닙니다.");
+      }
+      if (meeting.status !== "RECRUITING") {
+        throw new StoreError(409, "CANDIDATES_FROZEN", "투표가 시작되어 후보를 변경할 수 없습니다.");
+      }
+      const places = uniqueIds.length
+        ? await client.query<{
+            userPlaceId: string;
+            placeId: string;
+            purpose: Purpose;
+            mood: Mood;
+          }>(
+            `
+              select
+                id as "userPlaceId",
+                place_id as "placeId",
+                purpose,
+                mood
+              from user_places
+              where user_id = $1 and is_active = true and id = any($2::text[])
+            `,
+            [userId, uniqueIds]
+          )
+        : { rows: [] };
+      if (places.rows.length !== uniqueIds.length) {
+        throw new StoreError(422, "PLACE_NOT_FOUND_IN_MY_PLACES", "내 장소에서 선택할 수 없는 장소입니다.");
+      }
+      await client.query(
+        `
+          delete from candidate_recommendations recommendation
+          using meeting_candidates candidate
+          where recommendation.candidate_id = candidate.id
+            and candidate.meeting_id = $1
+            and recommendation.member_id = $2
+        `,
+        [meetingId, meeting.memberId]
+      );
+      await client.query(
+        `
+          delete from meeting_candidates candidate
+          where candidate.meeting_id = $1
+            and not exists (
+              select 1
+              from candidate_recommendations recommendation
+              where recommendation.candidate_id = candidate.id
+            )
+        `,
+        [meetingId]
+      );
+      for (const place of places.rows) {
+        const candidate = await client.query<{ id: string }>(
+          `
+            insert into meeting_candidates (id, meeting_id, place_id, is_frozen)
+            values ($1, $2, $3, false)
+            on conflict (meeting_id, place_id) do update set
+              is_frozen = meeting_candidates.is_frozen
+            returning id
+          `,
+          [randomUUID(), meetingId, place.placeId]
+        );
+        await client.query(
+          `
+            insert into candidate_recommendations (
+              candidate_id, member_id, user_place_id, purpose, mood
+            )
+            values ($1, $2, $3, $4, $5)
+            on conflict (candidate_id, member_id) do update set
+              user_place_id = excluded.user_place_id,
+              purpose = excluded.purpose,
+              mood = excluded.mood
+          `,
+          [
+            candidate.rows[0]!.id,
+            meeting.memberId,
+            place.userPlaceId,
+            place.purpose,
+            place.mood
+          ]
+        );
+      }
+      await client.query("update meetings set updated_at = now() where id = $1", [
+        meetingId
+      ]);
+      await client.query("commit");
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
+    return this.publicCandidates(meetingId, userId);
   }
 
   async createVote(meetingId: string, userId: string) {

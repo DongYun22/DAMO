@@ -516,6 +516,7 @@ paths:
       tags: [Candidates]
       operationId: listEligiblePlaces
       summary: 후보로 선택 가능한 내 장소 조회
+      description: 모든 활성 내 장소를 일치도 내림차순, 같은 일치도에서는 장소명 가나다순으로 반환합니다. 불일치 장소도 선택할 수 있습니다.
       parameters:
         - $ref: "#/components/parameters/MeetingId"
       responses:
@@ -1571,7 +1572,9 @@ components:
         - placeName
         - purpose
         - mood
-        - matchReasons
+        - purposeMatch
+        - moodMatch
+        - matchCount
         - selected
         - currentRecommenderCount
       properties:
@@ -1584,12 +1587,14 @@ components:
           $ref: "#/components/schemas/Purpose"
         mood:
           $ref: "#/components/schemas/Mood"
-        matchReasons:
-          type: array
-          uniqueItems: true
-          items:
-            type: string
-            enum: [PURPOSE, MOOD]
+        purposeMatch:
+          type: boolean
+        moodMatch:
+          type: boolean
+        matchCount:
+          type: integer
+          minimum: 0
+          maximum: 2
         selected:
           type: boolean
         currentRecommenderCount:

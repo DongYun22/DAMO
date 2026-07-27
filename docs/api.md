@@ -520,7 +520,7 @@ PATCH /api/v1/me/places/{userPlaceId}
 - `applyToMeetingIds`가 비어 있으면 `내 장소만 변경`이다.
 - 배열에 포함된 모임은 `이번 투표에도 반영` 대상이다.
 - `RECRUITING` 상태의 모임만 지정할 수 있다.
-- 변경 후 목적과 성격이 모두 불일치하면 해당 사용자의 추천을 제거한다.
+- 변경 후 목적과 성격이 모두 불일치해도 사용자가 선택한 추천은 유지한다.
 - 투표가 생성된 모임을 지정하면 `409 CANDIDATES_ALREADY_FROZEN`을 반환한다.
 
 응답:
@@ -798,7 +798,8 @@ DELETE /api/v1/meetings/{meetingId}
 GET /api/v1/meetings/{meetingId}/eligible-places
 ```
 
-모임 목적 또는 성격 중 하나 이상이 일치하는 내 장소를 반환한다.
+활성 상태인 모든 내 장소를 반환한다. 목적·성격 일치 개수(`matchCount`) 내림차순,
+같은 일치도에서는 장소명 가나다순으로 정렬한다.
 
 ```json
 {
@@ -809,9 +810,9 @@ GET /api/v1/meetings/{meetingId}/eligible-places
         "placeName": "을지로 보석",
         "purpose": "MEAL",
         "mood": "FUN",
-        "matchReasons": [
-          "MOOD"
-        ],
+        "purposeMatch": true,
+        "moodMatch": false,
+        "matchCount": 1,
         "selected": true,
         "currentRecommenderCount": 3
       }
@@ -869,7 +870,7 @@ PUT /api/v1/meetings/{meetingId}/candidates/me
 - 빈 배열이면 모든 후보 선택을 취소한다.
 - 최대 2개까지만 허용한다.
 - 현재 사용자의 활성 `내 장소`만 선택할 수 있다.
-- 모임 목적 또는 성격 중 하나 이상이 일치해야 한다.
+- 모임 목적·성격이 모두 불일치해도 선택할 수 있다.
 - 투표 생성 후에는 변경할 수 없다.
 
 오류:
@@ -877,7 +878,6 @@ PUT /api/v1/meetings/{meetingId}/candidates/me
 | 코드 | 상황 |
 | --- | --- |
 | `TOO_MANY_CANDIDATES` | 3개 이상 선택 |
-| `USER_PLACE_NOT_ELIGIBLE` | 목적과 성격이 모두 불일치 |
 | `USER_PLACE_NOT_FOUND` | 내 장소가 아니거나 등록 해제됨 |
 | `CANDIDATES_ALREADY_FROZEN` | 투표 생성 후 변경 |
 
@@ -1209,7 +1209,6 @@ POST /api/v1/meetings/{meetingId}/vote/final-selection
 | `USER_PLACE_NOT_FOUND` | 내 장소가 아니거나 등록 해제됨 |
 | `USER_PLACE_ALREADY_SAVED` | 이미 저장된 장소 |
 | `TOO_MANY_CANDIDATES` | 후보 2개 초과 |
-| `USER_PLACE_NOT_ELIGIBLE` | 모임 목적·성격과 모두 불일치 |
 | `CANDIDATES_ALREADY_FROZEN` | 투표 생성 후 후보 변경 시도 |
 | `NOT_ENOUGH_CANDIDATES` | 후보 2개 미만 |
 

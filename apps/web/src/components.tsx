@@ -343,6 +343,7 @@ export function CandidateRow({
       type="button"
       className={`candidate-row ${selected ? "is-selected" : ""}`}
       onClick={onClick}
+      aria-pressed={selected}
     >
       {content}
     </button>
@@ -365,6 +366,7 @@ export function UserPlaceRow({
       type="button"
       className={`candidate-row ${selected ? "is-selected" : ""}`}
       onClick={onClick}
+      aria-pressed={selected}
     >
       <PlaceThumbnail place={item.place} />
       <div className="place-meta">

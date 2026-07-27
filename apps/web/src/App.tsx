@@ -13,6 +13,7 @@ import { BottomNav, Loading, Toast } from "./components";
 import type { ShellContext } from "./shell";
 import {
   CandidateSelectPage,
+  CandidateMapPage,
   CreateMeetingPage,
   HomePage,
   JoinMeetingPage,
@@ -88,6 +89,10 @@ export function App() {
           <Route
             path="/meetings/:meetingId/candidates"
             element={<CandidateSelectPage />}
+          />
+          <Route
+            path="/meetings/:meetingId/candidates/:candidateId/map"
+            element={<CandidateMapPage />}
           />
           <Route path="/meetings/:meetingId/vote" element={<VotePage />} />
           <Route path="/meetings/:meetingId/results" element={<ResultsPage />} />

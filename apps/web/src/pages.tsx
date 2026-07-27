@@ -1267,6 +1267,64 @@ export function CandidateSelectPage() {
   );
 }
 
+export function CandidateMapPage() {
+  const { meetingId = "", candidateId = "" } = useParams();
+  const [meeting, setMeeting] = useState<MeetingDetail | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    void api<MeetingDetail>(`/meetings/${meetingId}`)
+      .then(setMeeting)
+      .catch((reason) => setError(errorMessage(reason)))
+      .finally(() => setLoading(false));
+  }, [meetingId]);
+
+  if (loading) return <Loading label="후보 위치 불러오는 중" />;
+
+  const candidate = meeting?.candidates.find((item) => item.id === candidateId);
+  if (!candidate) {
+    return (
+      <div className="page">
+        <ScreenHeader title="후보 위치" />
+        <InlineError message={error || "후보 장소를 찾을 수 없습니다."} />
+      </div>
+    );
+  }
+
+  return (
+    <div className="page page--candidate-map">
+      <ScreenHeader
+        title="후보 위치"
+        description={meeting?.name}
+        back
+      />
+      <InlineError message={error} />
+      <MapCanvas
+        places={[candidate.place]}
+        selectedId={candidate.place.id}
+      />
+      <section className="candidate-map-detail" aria-label={`${candidate.place.name} 상세정보`}>
+        <PlaceThumbnail place={candidate.place} large />
+        <div className="candidate-map-detail__body">
+          <span>{candidate.place.category}</span>
+          <h2>{candidate.place.name}</h2>
+          <p>{candidate.place.roadAddress || candidate.place.address}</p>
+          <small>
+            {candidate.place.station} · {candidate.place.distanceText}
+          </small>
+          <div className="candidate-map-detail__recommendation">
+            추천한 사람 {candidate.recommendationCount}명
+            {candidate.recommenderNames.length
+              ? ` · ${candidate.recommenderNames.join(", ")}`
+              : ""}
+          </div>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 export function MeetingDetailPage() {
   const { meetingId = "" } = useParams();
   const navigate = useNavigate();
@@ -1380,13 +1438,19 @@ export function MeetingDetailPage() {
         }
       />
       <InlineError message={error} />
-      <section className="meeting-hero">
-        <div className="meeting-hero__tags">
-          <span>{PURPOSE_LABELS[meeting.purpose]}</span>
-          <span>{MOOD_LABELS[meeting.mood]}</span>
+      <section
+        className={`meeting-hero ${
+          isHost ? "meeting-hero--with-invite" : ""
+        }`}
+      >
+        <div className="meeting-hero__summary">
+          <div className="meeting-hero__tags">
+            <span>{PURPOSE_LABELS[meeting.purpose]}</span>
+            <span>{MOOD_LABELS[meeting.mood]}</span>
+          </div>
+          <p><CalendarDays size={17} /> {formatMeetingAt(meeting.meetingAt)}</p>
+          <p><UsersRound size={17} /> 현재 {meeting.currentMembers}/{meeting.capacity}명</p>
         </div>
-        <p><CalendarDays size={18} /> {formatMeetingAt(meeting.meetingAt)}</p>
-        <p><UsersRound size={18} /> 현재 {meeting.currentMembers}/{meeting.capacity}명</p>
         {isHost ? (
           <div className="invite-code">
             <div>
@@ -1406,14 +1470,27 @@ export function MeetingDetailPage() {
           count={meeting.candidates.length}
           action={
             meeting.status === "RECRUITING" ? (
-              <Link to={`/meetings/${meetingId}/candidates`}>내 후보 변경</Link>
+              <Link to={`/meetings/${meetingId}/candidates`}>내 장소에서 가져오기</Link>
             ) : undefined
           }
         />
-        <div className="candidate-list">
+        <div
+          className={`candidate-list ${
+            meeting.candidates.length >= 4 ? "candidate-list--scrollable" : ""
+          }`}
+          aria-label="등록된 후보 장소"
+        >
           {meeting.candidates.length ? (
             meeting.candidates.map((candidate) => (
-              <CandidateRow key={candidate.id} candidate={candidate} />
+              <CandidateRow
+                key={candidate.id}
+                candidate={candidate}
+                onClick={() =>
+                  navigate(
+                    `/meetings/${meetingId}/candidates/${candidate.id}/map`
+                  )
+                }
+              />
             ))
           ) : (
             <EmptyState title="아직 후보가 없어요" description="각자의 내 장소에서 최대 2곳까지 고를 수 있어요." />
@@ -1549,6 +1626,7 @@ export function VotePage() {
   const [session, setSession] = useState<VoteSessionView | null>(null);
   const [loading, setLoading] = useState(true);
   const [choosing, setChoosing] = useState("");
+  const [showCandidateIntro, setShowCandidateIntro] = useState(false);
   const [error, setError] = useState("");
 
   const load = useCallback(async () => {
@@ -1559,6 +1637,11 @@ export function VotePage() {
       ]);
       setMeeting(detail);
       setSession(currentSession);
+      setShowCandidateIntro(
+        currentSession.status === "NOT_STARTED" &&
+          localStorage.getItem(`damo.voteIntroSeen.${currentSession.sessionId}`) !==
+            "true"
+      );
       if (currentSession.status === "COMPLETED") {
         navigate(`/meetings/${meetingId}/results`, { replace: true });
       }
@@ -1586,11 +1669,9 @@ export function VotePage() {
         })
       });
       if (next.status === "COMPLETED") {
-        await refreshHome();
-        window.setTimeout(
-          () => navigate(`/meetings/${meetingId}/results`, { replace: true }),
-          360
-        );
+        setSession(next);
+        void refreshHome();
+        navigate(`/meetings/${meetingId}/results`, { replace: true });
       } else {
         setSession(next);
         setChoosing("");
@@ -1613,6 +1694,55 @@ export function VotePage() {
 
   const { round } = session;
   const progress = (round.completedRounds / round.totalRounds) * 100;
+
+  if (showCandidateIntro) {
+    return (
+      <div className="page page--vote-intro">
+        <ScreenHeader
+          title={meeting.name}
+          description={`투표할 후보 ${meeting.candidates.length}곳을 먼저 확인해 보세요.`}
+        />
+        <div className="vote-intro-heading">
+          <div>
+            <span>전체 후보</span>
+            <strong>{meeting.candidates.length}</strong>
+          </div>
+          <p>선택한 장소는 다음 후보와 계속 비교됩니다.</p>
+        </div>
+        <div
+          className={`candidate-list vote-candidate-overview ${
+            meeting.candidates.length >= 4 ? "candidate-list--scrollable" : ""
+          }`}
+        >
+          {meeting.candidates.map((candidate) => (
+            <CandidateRow
+              key={candidate.id}
+              candidate={candidate}
+              onClick={() =>
+                navigate(
+                  `/meetings/${meetingId}/candidates/${candidate.id}/map`
+                )
+              }
+            />
+          ))}
+        </div>
+        <div className="sticky-page-action">
+          <PrimaryButton
+            type="button"
+            onClick={() => {
+              localStorage.setItem(
+                `damo.voteIntroSeen.${session.sessionId}`,
+                "true"
+              );
+              setShowCandidateIntro(false);
+            }}
+          >
+            A/B 투표 시작
+          </PrimaryButton>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="page page--vote">

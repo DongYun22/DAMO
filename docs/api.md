@@ -192,6 +192,7 @@ GET /api/v1/me/places?limit=20&cursor={nextCursor}
 | --- | --- | --- |
 | `GET` | `/me/home` | 진행 중·완료 모임 목록 |
 | `POST` | `/meetings` | 모임 생성 |
+| `POST` | `/meetings/{meetingId}/repeat` | 완료된 모임에서 새 회차 생성 |
 | `POST` | `/meetings/lookup` | 4자리 코드로 모임 확인 |
 | `GET` | `/meetings/{meetingId}` | 모임 상세 조회 |
 | `POST` | `/meetings/{meetingId}/join` | 모임 가입 또는 재가입 |
@@ -629,7 +630,48 @@ POST /api/v1/meetings
 - 진행 중인 모임과 겹치지 않는 가입 코드를 서버가 발급한다.
 - 모임 생성자도 `HOST` 역할의 참여자로 등록한다.
 
-### 7.2 코드로 모임 확인
+### 7.2 다시 만나기
+
+```http
+POST /api/v1/meetings/{meetingId}/repeat
+```
+
+완료된 모임의 모임장만 요청할 수 있다.
+
+```json
+{
+  "name": "봄날 카페투어",
+  "capacity": 4,
+  "meetingAt": "2026-08-03T13:30:00+09:00",
+  "purpose": "CAFE",
+  "mood": "FUN",
+  "memberIds": ["member-host", "member-2"],
+  "recurrence": {
+    "type": "WEEKLY",
+    "customNextMeetingAt": null
+  }
+}
+```
+
+- `memberIds`에는 이전 회차의 활성 모임원만 넣을 수 있으며 모임장은 반드시 포함한다.
+- 정원은 선택된 모임원 수보다 작을 수 없다.
+- 새 회차는 이전 회차의 가입 코드를 유지하고 후보·투표 기록은 새로 시작한다.
+- `recurrence.type`은 `WEEKLY`, `MONTHLY`, `CUSTOM` 중 하나다.
+- `CUSTOM`이면 `customNextMeetingAt`이 필요하며 이번 회차 일정보다 뒤여야 한다.
+- 반복하지 않으면 `recurrence`를 `null`로 보낸다.
+
+오류:
+
+| 코드 | 상황 |
+| --- | --- |
+| `MEETING_NOT_COMPLETED` | 이전 모임의 최종 장소가 아직 확정되지 않음 |
+| `NEXT_MEETING_ALREADY_EXISTS` | 이미 다음 회차가 생성됨 |
+| `HOST_MEMBER_REQUIRED` | 모임장을 선택 목록에서 제외함 |
+| `INVALID_MEMBER_SELECTION` | 이전 모임에 없는 모임원을 선택함 |
+| `CAPACITY_TOO_SMALL` | 정원이 자동 참여 모임원 수보다 작음 |
+| `INVALID_CUSTOM_RECURRENCE_DATE` | 직접 입력한 다음 일정이 올바르지 않음 |
+
+### 7.3 코드로 모임 확인
 
 ```http
 POST /api/v1/meetings/lookup
@@ -668,7 +710,7 @@ POST /api/v1/meetings/lookup
 | `MEETING_FULL` | 정원 초과 |
 | `MEETING_DELETED` | 삭제된 모임 |
 
-### 7.3 모임 가입 또는 재가입
+### 7.4 모임 가입 또는 재가입
 
 ```http
 POST /api/v1/meetings/{meetingId}/join
@@ -704,7 +746,7 @@ POST /api/v1/meetings/{meetingId}/join
 }
 ```
 
-### 7.4 모임 상세
+### 7.5 모임 상세
 
 ```http
 GET /api/v1/meetings/{meetingId}
@@ -739,7 +781,7 @@ GET /api/v1/meetings/{meetingId}
 }
 ```
 
-### 7.5 모임 탈퇴
+### 7.6 모임 탈퇴
 
 ```http
 POST /api/v1/meetings/{meetingId}/leave
@@ -752,7 +794,7 @@ POST /api/v1/meetings/{meetingId}/leave
 
 응답 `204 No Content`.
 
-### 7.6 모임원 내보내기
+### 7.7 모임원 내보내기
 
 ```http
 POST /api/v1/meetings/{meetingId}/members/{memberId}/kick
@@ -776,7 +818,7 @@ POST /api/v1/meetings/{meetingId}/members/{memberId}/kick
 }
 ```
 
-### 7.7 모임 삭제
+### 7.8 모임 삭제
 
 ```http
 DELETE /api/v1/meetings/{meetingId}

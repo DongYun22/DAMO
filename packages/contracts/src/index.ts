@@ -8,6 +8,13 @@ export type MeetingStatus =
   | "FINAL_SELECTION"
   | "COMPLETED"
   | "DELETED";
+
+export type RecurrenceType = "WEEKLY" | "MONTHLY" | "CUSTOM";
+
+export interface MeetingRecurrence {
+  type: RecurrenceType;
+  customNextMeetingAt?: string | null;
+}
 export type MeetingRole = "HOST" | "MEMBER";
 export type MemberStatus = "ACTIVE" | "LEFT" | "KICKED";
 export type VoteStatus = "OPEN" | "FINAL_SELECTION" | "CLOSED";
@@ -85,6 +92,10 @@ export interface MeetingSummary {
   voteAlert: boolean;
   myVoteCompleted: boolean;
   finalPlace?: Place | null;
+  isPastDue: boolean;
+  seriesId?: string | null;
+  parentMeetingId?: string | null;
+  recurrence?: MeetingRecurrence | null;
   updatedAt: string;
 }
 
@@ -164,6 +175,11 @@ export interface CreateMeetingInput {
   meetingAt: string;
   purpose: Purpose;
   mood: Mood;
+}
+
+export interface RepeatMeetingInput extends CreateMeetingInput {
+  memberIds: string[];
+  recurrence?: MeetingRecurrence | null;
 }
 
 export const PURPOSE_LABELS: Record<Purpose, string> = {

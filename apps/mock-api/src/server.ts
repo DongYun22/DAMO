@@ -27,6 +27,13 @@ declare global {
 
 const purposeSchema = z.enum(["STUDY", "CAFE", "MEAL", "DRINK"]);
 const moodSchema = z.enum(["FUN", "QUIET", "BUSINESS", "TIPSY"]);
+const recurrenceSchema = z
+  .object({
+    type: z.enum(["WEEKLY", "MONTHLY", "CUSTOM"]),
+    customNextMeetingAt: z.string().datetime({ offset: true }).nullable().optional()
+  })
+  .nullable()
+  .optional();
 
 export const app = express();
 const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));
@@ -490,6 +497,33 @@ app.post(
     }
     await store.reset();
     return ok(res, { reset: true });
+  })
+);
+
+app.post(
+  "/api/v1/meetings/:meetingId/repeat",
+  auth,
+  asyncRoute(async (req, res) => {
+    const body = z
+      .object({
+        name: z.string().min(1).max(20),
+        capacity: z.number().int().min(2),
+        meetingAt: z.string().datetime({ offset: true }),
+        purpose: purposeSchema,
+        mood: moodSchema,
+        memberIds: z.array(z.string().min(1)).min(1),
+        recurrence: recurrenceSchema
+      })
+      .parse(req.body);
+    return ok(
+      res,
+      await store.repeatMeeting(
+        pathParam(req, "meetingId"),
+        req.userId!,
+        body
+      ),
+      201
+    );
   })
 );
 

@@ -23,6 +23,7 @@ import {
   MyPlacesPage,
   NotFoundPage,
   OAuthCallbackPage,
+  RepeatMeetingPage,
   ResultsPage,
   VotePage
 } from "./pages";
@@ -86,6 +87,10 @@ export function App() {
           <Route path="/meetings/new" element={<CreateMeetingPage />} />
           <Route path="/meetings/join" element={<JoinMeetingPage />} />
           <Route path="/meetings/:meetingId" element={<MeetingDetailPage />} />
+          <Route
+            path="/meetings/:meetingId/repeat"
+            element={<RepeatMeetingPage />}
+          />
           <Route
             path="/meetings/:meetingId/candidates"
             element={<CandidateSelectPage />}

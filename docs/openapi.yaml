@@ -443,6 +443,35 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
 
+  /meetings/{meetingId}/repeat:
+    post:
+      tags: [Meetings]
+      operationId: repeatMeeting
+      summary: 완료된 모임에서 새 회차 생성
+      description: 기존 기록은 보존하고 기본 정보·가입 코드·선택한 모임원을 이어받은 새 회차를 생성합니다.
+      parameters:
+        - $ref: "#/components/parameters/MeetingId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RepeatMeetingRequest"
+      responses:
+        "201":
+          description: 새 회차 생성 성공
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeetingDetailResponse"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
   /meetings/{meetingId}/join:
     post:
       tags: [Meetings]
@@ -1281,6 +1310,55 @@ components:
           $ref: "#/components/schemas/Purpose"
         mood:
           $ref: "#/components/schemas/Mood"
+
+    RepeatMeetingRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - name
+        - capacity
+        - meetingAt
+        - purpose
+        - mood
+        - memberIds
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 20
+        capacity:
+          type: integer
+          minimum: 2
+        meetingAt:
+          type: string
+          format: date-time
+          description: 새 회차 일정. Asia/Seoul 기준이며 분은 00 또는 30
+        purpose:
+          $ref: "#/components/schemas/Purpose"
+        mood:
+          $ref: "#/components/schemas/Mood"
+        memberIds:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          description: 이전 회차에서 자동 참여시킬 모임원 ID. 모임장 필수
+          items:
+            type: string
+        recurrence:
+          oneOf:
+            - type: object
+              additionalProperties: false
+              required: [type]
+              properties:
+                type:
+                  type: string
+                  enum: [WEEKLY, MONTHLY, CUSTOM]
+                customNextMeetingAt:
+                  oneOf:
+                    - type: string
+                      format: date-time
+                    - type: "null"
+            - type: "null"
 
     MeetingCreated:
       type: object

@@ -275,6 +275,11 @@ RECRUITING
 | `join_code` | CHAR(4) | O | 4자리 숫자 가입 코드 |
 | `status` | ENUM | O | 모임 상태 |
 | `final_candidate_id` | UUID | X | 최종 확정 후보 |
+| `series_id` | UUID | X | 정기 모임 묶음의 최초 모임 ID |
+| `parent_meeting_id` | UUID | X | 바로 이전 회차의 모임 ID |
+| `recurrence_type` | ENUM | X | `WEEKLY`, `MONTHLY`, `CUSTOM` |
+| `recurrence_next_at` | TIMESTAMPTZ | X | 직접 입력한 다음 회차 일시 |
+| `next_meeting_id` | UUID | X | 이미 생성된 다음 회차 ID |
 | `voting_started_at` | TIMESTAMPTZ | X | 투표 생성 시각 |
 | `voting_closed_at` | TIMESTAMPTZ | X | 모임장이 투표를 종료한 시각 |
 | `completed_at` | TIMESTAMPTZ | X | 최종 장소 확정 시각 |
@@ -303,7 +308,19 @@ RECRUITING
 - `COMPLETED`, `DELETED` 상태의 모임 코드는 새로운 모임에서 다시 사용할 수 있다.
 - 가입 코드만으로 모임을 찾을 때 삭제되거나 완료된 모임은 검색 대상에서 제외한다.
 
-### 7.3 모임 삭제
+### 7.3 다시 만나기와 정기 모임
+
+- 완료된 모임은 수정하거나 초기화하지 않고 새로운 회차를 생성한다.
+- 새 회차는 모임명, 정원, 목적, 성격과 가입 코드를 이전 회차에서 가져오되 모임장이 수정할 수 있다.
+- 모임장은 이전 회차의 활성 모임원 중 자동 참여시킬 사람을 선택한다. 모임장은 항상 포함한다.
+- 새 회차의 후보, 투표, 결과는 비어 있는 상태로 시작한다.
+- 이전 회차는 `parent_meeting_id`, 전체 정기 모임 묶음은 `series_id`로 연결한다.
+- 하나의 회차는 다음 회차를 최대 하나만 가질 수 있다.
+- `WEEKLY`는 같은 요일과 시각, `MONTHLY`는 같은 일자와 시각을 기준으로 다음 일정을 계산한다.
+- `CUSTOM`은 사용자가 직접 지정한 다음 일정 한 회차만 생성하고 자동 반복을 종료한다.
+- 정기 설정이 있는 회차의 최종 장소가 확정되면 다음 회차 하나를 자동 생성한다.
+
+### 7.4 모임 삭제
 
 - 모임장만 삭제할 수 있다.
 - `RECRUITING`, `VOTING`, `FINAL_SELECTION`, `COMPLETED` 상태에서 모두 삭제할 수 있다.
@@ -625,10 +642,12 @@ selected_candidate_id가 해당 후보인 vote_choices 수
 
 홈 화면은 현재 사용자가 참여한 모임을 두 영역으로 나눈다.
 
-1. `진행 중인 모임`: `RECRUITING`, `VOTING`, `FINAL_SELECTION`
-2. `완료된 모임`: `COMPLETED`
+1. `진행 중인 모임`: 일정이 지나지 않은 `RECRUITING`, `VOTING`, `FINAL_SELECTION`
+2. `완료된 모임`: `COMPLETED` 또는 일정이 지난 모임
 
 - 완료된 모임 카드는 진행 중인 모임보다 연한 배경과 낮은 강조도로 표시한다.
+- 일정만 지난 미완료 모임은 서버 상태를 강제로 변경하지 않는다. 카드에서 기존 후보 선택·투표 종료 흐름을 이어갈 수 있다.
+- 완료 영역은 최근 일정부터 정렬하고 지난 회차를 계속 누적한다.
 - 삭제된 모임은 두 목록에서 모두 제외한다.
 - MVP에서는 홈 상태와 투표 결과를 5초 간격으로 조회한다.
 - 응답의 `updatedAt`을 이용해 화면이 달라졌을 때만 다시 그린다.
@@ -649,9 +668,8 @@ selected_candidate_id가 해당 후보인 vote_choices 수
 데이터 모델의 핵심 구조에는 영향을 주지 않지만 API 명세 작성 전에 다음 정책을 확정해야 한다.
 
 1. 모임 이름과 닉네임의 금칙어 정책
-2. 완료된 모임을 홈에서 보관하는 기간
-3. 계정 탈퇴와 개인정보 영구 삭제 기간
-4. 네이버 장소 정보의 갱신 주기
+2. 계정 탈퇴와 개인정보 영구 삭제 기간
+3. 네이버 장소 정보의 갱신 주기
 
 ## 17. 다음 문서
 

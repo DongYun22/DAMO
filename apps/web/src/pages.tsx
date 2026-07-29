@@ -188,6 +188,7 @@ export function LoginPage() {
             <input
               value={loginId}
               onChange={(event) => setLoginId(event.target.value)}
+              placeholder="아이디를 입력하세요"
               maxLength={40}
               autoComplete="username"
               required
@@ -200,6 +201,7 @@ export function LoginPage() {
                 <input
                   value={nickname}
                   onChange={(event) => setNickname(event.target.value)}
+                  placeholder="DAMO"
                   maxLength={20}
                   required
                 />
@@ -210,6 +212,7 @@ export function LoginPage() {
                   value={email}
                   onChange={(event) => setEmail(event.target.value)}
                   type="email"
+                  placeholder="DAMO@naver.com"
                   autoComplete="email"
                 />
               </label>
@@ -221,6 +224,7 @@ export function LoginPage() {
               value={password}
               onChange={(event) => setPassword(event.target.value)}
               type="password"
+              placeholder="비밀번호를 입력하세요 (4자 이상)"
               autoComplete={mode === "login" ? "current-password" : "new-password"}
               minLength={4}
               required

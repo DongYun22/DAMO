@@ -116,10 +116,10 @@ export function LoginPage() {
   const navigate = useNavigate();
   const location = useLocation();
   const [mode, setMode] = useState<"login" | "signup">("login");
-  const [loginId, setLoginId] = useState("damo");
-  const [nickname, setNickname] = useState("가은");
+  const [loginId, setLoginId] = useState("");
+  const [nickname, setNickname] = useState("");
   const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("1234");
+  const [password, setPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
 
@@ -188,6 +188,7 @@ export function LoginPage() {
             <input
               value={loginId}
               onChange={(event) => setLoginId(event.target.value)}
+              placeholder="아이디를 입력하세요"
               maxLength={40}
               autoComplete="username"
               required
@@ -200,6 +201,7 @@ export function LoginPage() {
                 <input
                   value={nickname}
                   onChange={(event) => setNickname(event.target.value)}
+                  placeholder="DAMO"
                   maxLength={20}
                   required
                 />
@@ -210,6 +212,7 @@ export function LoginPage() {
                   value={email}
                   onChange={(event) => setEmail(event.target.value)}
                   type="email"
+                  placeholder="DAMO@naver.com"
                   autoComplete="email"
                 />
               </label>
@@ -221,6 +224,7 @@ export function LoginPage() {
               value={password}
               onChange={(event) => setPassword(event.target.value)}
               type="password"
+              placeholder="비밀번호를 입력하세요 (4자 이상)"
               autoComplete={mode === "login" ? "current-password" : "new-password"}
               minLength={4}
               required
@@ -244,9 +248,6 @@ export function LoginPage() {
             <span>G</span> Google로 계속
           </button>
         </div>
-        <p className="prototype-note">
-          프로토타입 계정: <b>damo</b> / <b>1234</b>
-        </p>
       </section>
     </div>
   );
@@ -379,7 +380,7 @@ export function MapPage() {
   const [searchParams] = useSearchParams();
   const meetingId = searchParams.get("meetingId") ?? "";
   const candidatePath = meetingId ? `/meetings/${meetingId}/candidates` : "";
-  const [query, setQuery] = useState("성수역");
+  const [query, setQuery] = useState("");
   const [places, setPlaces] = useState<Place[]>([]);
   const [saved, setSaved] = useState<UserPlace[]>([]);
   const [selected, setSelected] = useState<Place | null>(null);
@@ -1716,7 +1717,8 @@ export function MeetingDetailPage() {
   const isHost = meeting.role === "HOST";
 
   const copyInvite = async () => {
-    const text = `${meeting.name}\n가입 코드: ${meeting.joinCode}\n${meeting.shareUrl}`;
+    const shareUrl = `${window.location.origin}/meetings/join?meetingId=${meetingId}`;
+    const text = `${meeting.name}\n가입 코드: ${meeting.joinCode}\n${shareUrl}`;
     try {
       await navigator.clipboard.writeText(text);
     } catch {

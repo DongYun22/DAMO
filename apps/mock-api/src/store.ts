@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { webBaseUrl } from "./config.js";
 import type {
   Candidate,
   CreateMeetingInput,
@@ -908,7 +909,7 @@ export class MockStore {
       ...summary,
       hostUserId: meeting.hostUserId,
       joinCode: meeting.joinCode,
-      shareUrl: `http://localhost:5173/meetings/join?meetingId=${meeting.id}`,
+      shareUrl: `${webBaseUrl()}/meetings/join?meetingId=${meeting.id}`,
       members: structuredClone(this.activeMembers(meeting.id)),
       candidates: this.publicCandidates(meeting.id, userId),
       finalCandidateId: meeting.finalCandidateId

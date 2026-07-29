@@ -18,6 +18,7 @@ import type {
 } from "@damo/contracts";
 import type { Pool, PoolClient } from "pg";
 import { createDatabasePool } from "./database.js";
+import { webBaseUrl } from "./config.js";
 import {
   MockStore,
   StoreError,
@@ -1520,7 +1521,7 @@ export class PostgresStore {
       ...summary,
       hostUserId: meeting.hostUserId,
       joinCode: meeting.joinCode,
-      shareUrl: `http://localhost:5173/meetings/join?meetingId=${meetingId}`,
+      shareUrl: `${webBaseUrl()}/meetings/join?meetingId=${meetingId}`,
       members: memberResult.rows.map((member) => ({
         ...member,
         joinedAt: timestamp(member.joinedAt)

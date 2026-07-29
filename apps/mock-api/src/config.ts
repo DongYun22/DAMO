@@ -11,6 +11,9 @@ if (existsSync(localEnvPath)) {
 
 export const databaseUrl = () => process.env.DATABASE_URL?.trim() ?? "";
 
+export const webBaseUrl = () =>
+  (process.env.WEB_BASE_URL?.trim() || "http://localhost:5173").replace(/\/$/, "");
+
 const isNodeTest = () =>
   Boolean(process.env.NODE_TEST_CONTEXT) || process.argv.includes("--test");
 

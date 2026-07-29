@@ -2769,13 +2769,6 @@ button.candidate-row {
   background: #f4f7fb;
 }
 
-.prototype-note {
-  margin: 16px 0 0;
-  color: var(--muted);
-  text-align: center;
-  font-size: 11px;
-}
-
 .center-page {
   flex-direction: column;
   gap: 14px;

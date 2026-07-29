@@ -14,7 +14,9 @@ import type {
   RepeatMeetingInput,
   User,
   UserPlace,
-  VoteSessionView
+  VoteResults,
+  VoteSessionView,
+  VoteStatus
 } from "@damo/contracts";
 import type { Pool, PoolClient } from "pg";
 import { createDatabasePool } from "./database.js";
@@ -264,6 +266,126 @@ export class PostgresStore {
         candidateA,
         candidateB
       }
+    };
+  }
+
+  private async computeVoteResults(
+    client: PoolClient,
+    meetingId: string,
+    userId: string
+  ): Promise<VoteResults> {
+    const meetingResult = await client.query<{
+      status: MeetingStatus;
+      finalCandidateId: string | null;
+    }>(
+      `
+        select status, final_candidate_id as "finalCandidateId"
+        from meetings
+        where id = $1 and status <> 'DELETED'
+      `,
+      [meetingId]
+    );
+    const meeting = meetingResult.rows[0];
+    if (!meeting) {
+      throw new StoreError(404, "MEETING_NOT_FOUND", "모임을 찾을 수 없습니다.");
+    }
+
+    const memberResult = await client.query(
+      `
+        select 1
+        from meeting_members
+        where meeting_id = $1 and user_id = $2 and status = 'ACTIVE'
+      `,
+      [meetingId, userId]
+    );
+    if (memberResult.rowCount === 0) {
+      throw new StoreError(403, "MEETING_ACCESS_DENIED", "모임원이 아닙니다.");
+    }
+
+    const voteResult = await client.query<{ status: VoteStatus }>(
+      `select status from votes where meeting_id = $1`,
+      [meetingId]
+    );
+    const vote = voteResult.rows[0];
+    if (!vote) {
+      throw new StoreError(404, "VOTE_NOT_FOUND", "투표를 찾을 수 없습니다.");
+    }
+
+    const sessionResult = await client.query<{
+      userId: string;
+      status: "NOT_STARTED" | "IN_PROGRESS" | "COMPLETED";
+    }>(
+      `select user_id as "userId", status from vote_sessions where meeting_id = $1`,
+      [meetingId]
+    );
+    const sessions = sessionResult.rows;
+
+    const voteCountResult = await client.query<{ candidateId: string; voteCount: number }>(
+      `
+        select
+          choice.selected_candidate_id as "candidateId",
+          count(*)::int as "voteCount"
+        from vote_choices choice
+        join vote_sessions session on session.id = choice.session_id
+        where session.meeting_id = $1
+        group by choice.selected_candidate_id
+      `,
+      [meetingId]
+    );
+    const voteCounts = new Map(
+      voteCountResult.rows.map((row) => [row.candidateId, row.voteCount])
+    );
+
+    const candidates = await this.queryPublicCandidates(client, meetingId, userId);
+    const raw = candidates
+      .map((candidate) => ({
+        candidate,
+        voteCount: voteCounts.get(candidate.id) ?? 0,
+        recommendationCount: candidate.recommendationCount
+      }))
+      .sort(
+        (a, b) =>
+          b.voteCount - a.voteCount ||
+          b.recommendationCount - a.recommendationCount ||
+          a.candidate.place.name.localeCompare(b.candidate.place.name)
+      );
+
+    let previousKey = "";
+    let rank = 0;
+    const results = raw.map((item, index) => {
+      const key = `${item.voteCount}:${item.recommendationCount}`;
+      if (key !== previousKey) rank = index + 1;
+      previousKey = key;
+      const sameRankCount = raw.filter(
+        (other) =>
+          other.voteCount === item.voteCount &&
+          other.recommendationCount === item.recommendationCount
+      ).length;
+      return {
+        ...item,
+        rank,
+        isJointRank: sameRankCount > 1,
+        isFinal: meeting.finalCandidateId === item.candidate.id
+      };
+    });
+
+    const tiedFirstCandidateIds = results
+      .filter((result) => result.rank === 1)
+      .map((result) => result.candidate.id);
+    const mySession = sessions.find((session) => session.userId === userId);
+
+    return {
+      meetingId,
+      voteStatus: vote.status,
+      meetingStatus: meeting.status,
+      myVoteCompleted: mySession?.status === "COMPLETED",
+      completedMembers: sessions.filter((session) => session.status === "COMPLETED").length,
+      totalMembers: sessions.length,
+      incompleteMembers: sessions.filter((session) => session.status !== "COMPLETED").length,
+      results,
+      tiedFirstCandidateIds,
+      finalCandidateId: meeting.finalCandidateId,
+      updatedAt: new Date().toISOString()
     };
   }
 
@@ -1947,7 +2069,12 @@ export class PostgresStore {
   }
 
   async voteResults(meetingId: string, userId: string) {
-    return this.read((store) => store.voteResults(meetingId, userId));
+    const client = await this.pool.connect();
+    try {
+      return await this.computeVoteResults(client, meetingId, userId);
+    } finally {
+      client.release();
+    }
   }
 
   async closeVote(meetingId: string, userId: string, force: boolean) {

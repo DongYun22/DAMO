@@ -162,4 +162,76 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
     assert.equal(saved.completedRounds, 1);
     assert.equal(vote.voteId.length > 0, true);
   });
+
+  it("computes vote results with correct ranking and tie detection", async () => {
+    const host = await store.signup("host-results", "호스트", "pw1234");
+    const guest = await store.signup("guest-results", "게스트", "pw1234");
+    const meeting = await store.createMeeting(host.user.id, {
+      name: "결과 테스트",
+      capacity: 4,
+      meetingAt: "2026-08-01T10:00:00+09:00",
+      purpose: "MEAL",
+      mood: "FUN"
+    });
+    await store.joinMeeting(guest.user.id, meeting.id, meeting.joinCode!, "게스트닉");
+
+    const [placeA] = await store.upsertPlaces([
+      {
+        id: "place-results-a",
+        naverPlaceId: "naver-results-a",
+        name: "가나다식당",
+        category: "식당",
+        address: "서울",
+        roadAddress: "서울",
+        latitude: 37.5,
+        longitude: 127.0,
+        station: "강남",
+        distanceText: "1분"
+      }
+    ]);
+    const [placeB] = await store.upsertPlaces([
+      {
+        id: "place-results-b",
+        naverPlaceId: "naver-results-b",
+        name: "마바사식당",
+        category: "식당",
+        address: "서울",
+        roadAddress: "서울",
+        latitude: 37.6,
+        longitude: 127.1,
+        station: "역삼",
+        distanceText: "2분"
+      }
+    ]);
+    const hostPlace = await store.registerUserPlace(
+      host.user.id,
+      placeA!.naverPlaceId,
+      "MEAL",
+      "FUN"
+    );
+    const guestPlace = await store.registerUserPlace(
+      guest.user.id,
+      placeB!.naverPlaceId,
+      "MEAL",
+      "FUN"
+    );
+    await store.replaceMyCandidates(meeting.id, host.user.id, [hostPlace.id]);
+    await store.replaceMyCandidates(meeting.id, guest.user.id, [guestPlace.id]);
+    await store.createVote(meeting.id, host.user.id);
+
+    const hostSession = await store.voteSession(meeting.id, host.user.id);
+    await store.saveChoice(meeting.id, host.user.id, 1, hostSession.round!.candidateA.id);
+    const guestSession = await store.voteSession(meeting.id, guest.user.id);
+    await store.saveChoice(meeting.id, guest.user.id, 1, guestSession.round!.candidateA.id);
+
+    const results = await store.voteResults(meeting.id, host.user.id);
+    assert.equal(results.totalMembers, 2);
+    assert.equal(results.completedMembers, 2);
+    assert.equal(results.incompleteMembers, 0);
+    assert.equal(
+      results.results.reduce((sum, item) => sum + item.voteCount, 0),
+      2
+    );
+    assert.equal(results.results.filter((item) => item.rank === 1).length >= 1, true);
+  });
 });

@@ -12,6 +12,8 @@
 - 전환 대상: `lookupMeeting`, `joinMeeting`, `createMeeting`, `createVote`, `closeVote`, `finalSelection`
 - 다음 사이클로 보류: `leaveMeeting`, `kickMember`, `deleteMeeting`, `updateUserPlace`, `unregisterUserPlace`, `reset` (사용 빈도가 낮아 우선순위를 낮춤)
 
+> **정정 (구현 계획 작성 중 발견)**: `voteResults()`도 실제로는 아직 `read()`(전체 스냅샷 로드) 방식이었다 — 아래 "voteResults 재사용" 서술은 잘못된 전제였다. `closeVote`/`finalSelection`이 동점 판정을 위해 `voteResults`를 그대로 호출하므로, `voteResults`도 이번 범위에 포함해 SQL로 전환한다. 별도 작업이 추가되는 게 아니라 `closeVote`/`finalSelection`을 SQL로 만들기 위한 필수 선행 작업이다.
+
 ## 락 전략
 
 지금은 모든 쓰기가 전역 advisory lock(`hashtext('damo-store-write')`) 하나를 공유해서, 서로 무관한 모임의 요청도 직렬로 대기한다.

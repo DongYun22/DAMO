@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Convert the six highest-traffic methods in `apps/mock-api/src/postgres-store.ts` (`lookupMeeting`, `joinMeeting`, `createMeeting`, `createVote`, `closeVote`, `finalSelection`) plus their shared dependency `voteResults`, off the full-database-snapshot `read()`/`write()` pattern and onto scoped, indexed SQL — cutting per-request latency from the measured ~1.1–1.24s down to targeted queries, while unifying locking to one per-meeting advisory lock.
+**Goal:** Convert the highest-impact methods in `apps/mock-api/src/postgres-store.ts` (`lookupMeeting`, `joinMeeting`, `createMeeting`, `deleteMeeting`, `createVote`, `closeVote`, `finalSelection`) plus their shared dependency `voteResults`, off the full-database-snapshot `read()`/`write()` pattern and onto scoped, indexed SQL. Measured against the Render deployment: `lookupMeeting` (a `read()`) took ~1.1–1.24s; `createMeeting` and `deleteMeeting` (both `write()`, which re-saves every table) took ~30s each. `deleteMeeting` was added to this batch after that measurement — its business logic is a single status flip, so converting it is low-risk and high-payoff.
 
-**Architecture:** Add a `withMeetingLock(meetingId, operation)` transaction helper (per-meeting `pg_advisory_xact_lock`) and reuse it across both the two already-converted methods (`replaceMyCandidates`, `saveChoice`) and the seven new conversions. Add a `computeVoteResults` SQL helper (targeted queries + the exact same in-memory ranking algorithm as `store.ts`) shared by `voteResults`, `closeVote`, `finalSelection`. Add a `createNextRecurringOccurrence` SQL helper shared by `closeVote`/`finalSelection` for recurring-meeting rollover.
+**Architecture:** Add a `withMeetingLock(meetingId, operation)` transaction helper (per-meeting `pg_advisory_xact_lock`) and reuse it across both the two already-converted methods (`replaceMyCandidates`, `saveChoice`) and the eight new conversions. Add a `computeVoteResults` SQL helper (targeted queries + the exact same in-memory ranking algorithm as `store.ts`) shared by `voteResults`, `closeVote`, `finalSelection`. Add a `createNextRecurringOccurrence` SQL helper shared by `closeVote`/`finalSelection` for recurring-meeting rollover.
 
 **Tech Stack:** Node.js `pg` driver (raw SQL, no ORM), `node:test`, TypeScript, Supabase PostgreSQL.
 
@@ -1083,7 +1083,102 @@ git commit -m "Convert createMeeting to targeted SQL with a bounded join-code re
 
 ---
 
-## Task 7: Convert `joinMeeting` to SQL
+## Task 7: Convert `deleteMeeting` to SQL
+
+**Files:**
+- Modify: `apps/mock-api/src/postgres-store.ts`
+- Test: `apps/mock-api/src/postgres-store.test.ts`
+
+Added to this batch after measuring `deleteMeeting` at ~30s against the Render deployment (same `write()` full-snapshot pattern as the other conversions, but the logic itself is trivial — a single status flip — so the risk of converting it is low).
+
+- [ ] **Step 1: Write the failing test**
+
+```ts
+  it("deletes a meeting and rejects non-hosts", async () => {
+    const host = await store.signup("host-delete", "호스트", "pw1234");
+    const guest = await store.signup("guest-delete", "게스트", "pw1234");
+    const meeting = await store.createMeeting(host.user.id, {
+      name: "삭제 테스트",
+      capacity: 2,
+      meetingAt: "2026-08-01T10:00:00+09:00",
+      purpose: "STUDY",
+      mood: "QUIET"
+    });
+    await store.joinMeeting(guest.user.id, meeting.id, meeting.joinCode!, "게스트닉");
+
+    await assert.rejects(
+      () => store.deleteMeeting(meeting.id, guest.user.id),
+      (error: unknown) => (error as { code?: string }).code === "HOST_ONLY"
+    );
+
+    const result = await store.deleteMeeting(meeting.id, host.user.id);
+    assert.equal(result.deleted, true);
+
+    await assert.rejects(
+      () => store.detail(meeting.id, host.user.id),
+      (error: unknown) => (error as { code?: string }).code === "MEETING_ACCESS_DENIED"
+    );
+  });
+```
+
+- [ ] **Step 2: Run test to verify current behavior (should already pass)**
+
+Run: `TEST_DATABASE_URL="$TEST_DATABASE_URL" pnpm --filter @damo/mock-api test`
+Expected: PASS via the old `write()` path — this test now guards the conversion.
+
+- [ ] **Step 3: Replace `deleteMeeting`**
+
+```ts
+  async deleteMeeting(meetingId: string, userId: string) {
+    return this.withMeetingLock(meetingId, async (client) => {
+      const result = await client.query<{ hostUserId: string }>(
+        `
+          select host_user_id as "hostUserId"
+          from meetings
+          where id = $1 and status <> 'DELETED'
+        `,
+        [meetingId]
+      );
+      const meeting = result.rows[0];
+      if (!meeting) {
+        throw new StoreError(404, "MEETING_NOT_FOUND", "모임을 찾을 수 없습니다.");
+      }
+      if (meeting.hostUserId !== userId) {
+        throw new StoreError(403, "HOST_ONLY", "모임장만 실행할 수 있습니다.");
+      }
+      await client.query(
+        `
+          update meetings
+          set status = 'DELETED', deleted_at = now(), updated_at = now()
+          where id = $1
+        `,
+        [meetingId]
+      );
+      return { meetingId, deleted: true };
+    });
+  }
+```
+
+- [ ] **Step 4: Run the test to verify it passes**
+
+Run: `TEST_DATABASE_URL="$TEST_DATABASE_URL" pnpm --filter @damo/mock-api test`
+Expected: PASS.
+
+- [ ] **Step 5: Typecheck**
+
+Run: `pnpm --filter @damo/mock-api typecheck`
+Expected: no errors.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add apps/mock-api/src/postgres-store.ts apps/mock-api/src/postgres-store.test.ts
+git commit -m "Convert deleteMeeting to targeted SQL"
+```
+
+---
+
+## Task 8: Convert `joinMeeting` to SQL
 
 **Files:**
 - Modify: `apps/mock-api/src/postgres-store.ts`
@@ -1223,7 +1318,7 @@ git commit -m "Convert joinMeeting to targeted SQL under the per-meeting lock"
 
 ---
 
-## Task 8: Convert `createVote` to SQL
+## Task 9: Convert `createVote` to SQL
 
 **Files:**
 - Modify: `apps/mock-api/src/postgres-store.ts`
@@ -1440,7 +1535,7 @@ git commit -m "Convert createVote to targeted SQL with rotated per-member sessio
 
 ---
 
-## Task 9: `createNextRecurringOccurrence` SQL helper
+## Task 10: `createNextRecurringOccurrence` SQL helper
 
 **Files:**
 - Modify: `apps/mock-api/src/postgres-store.ts` (imports, new private helper)
@@ -1570,7 +1665,7 @@ git commit -m "Add createNextRecurringOccurrence SQL helper"
 
 ---
 
-## Task 10: Convert `closeVote` to SQL
+## Task 11: Convert `closeVote` to SQL
 
 **Files:**
 - Modify: `apps/mock-api/src/postgres-store.ts`
@@ -1772,7 +1867,7 @@ git commit -m "Convert closeVote to targeted SQL, sharing computeVoteResults"
 
 ---
 
-## Task 11: Convert `finalSelection` to SQL
+## Task 12: Convert `finalSelection` to SQL
 
 **Files:**
 - Modify: `apps/mock-api/src/postgres-store.ts`
@@ -1963,7 +2058,7 @@ git commit -m "Convert finalSelection to targeted SQL, sharing computeVoteResult
 
 ---
 
-## Task 12: Update documentation
+## Task 13: Update documentation
 
 **Files:**
 - Modify: `README.md`
@@ -2017,7 +2112,7 @@ git commit -m "Document the meeting-scoped lock strategy and test-database setup
 
 ---
 
-## Task 13: Final verification
+## Task 14: Final verification
 
 **Files:** none (verification only)
 

@@ -116,10 +116,10 @@ export function LoginPage() {
   const navigate = useNavigate();
   const location = useLocation();
   const [mode, setMode] = useState<"login" | "signup">("login");
-  const [loginId, setLoginId] = useState("damo");
-  const [nickname, setNickname] = useState("가은");
+  const [loginId, setLoginId] = useState("");
+  const [nickname, setNickname] = useState("");
   const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("1234");
+  const [password, setPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
 
@@ -244,9 +244,6 @@ export function LoginPage() {
             <span>G</span> Google로 계속
           </button>
         </div>
-        <p className="prototype-note">
-          프로토타입 계정: <b>damo</b> / <b>1234</b>
-        </p>
       </section>
     </div>
   );

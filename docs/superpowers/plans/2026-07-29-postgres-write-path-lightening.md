@@ -10,31 +10,51 @@
 
 ---
 
-## Task 0: Prerequisite — test Supabase project (human step, not automatable)
+## Task 0: Prerequisite — test database (human step, not automatable)
 
-This plan adds Postgres-backed tests that must run against a real database that is **not** the Render/production database. This step cannot be done by an agent (it requires a Supabase account) — a human must do it before Task 2's tests can run for real, but Tasks 0–1 and the SQL-writing parts of every later task can proceed without it (the new test suite self-skips if the env var is absent).
+This plan adds Postgres-backed tests that must run against a real database that is **not** the Render/production database. This step cannot be done by an agent — a human must do it before Task 2's tests can run for real, but Tasks 0–1 and the SQL-writing parts of every later task can proceed without it (the new test suite self-skips if the env var is absent).
 
-- [ ] **Step 1: Create a separate Supabase project**
+> **Actual approach taken (2026-07-29): local Homebrew PostgreSQL, not a second Supabase project.** The original plan called for a separate Supabase project, but the account's org had already hit Supabase's free-tier limit of 2 active projects (the Render project counts as one) and creating a third was blocked. Local Postgres via Homebrew avoids that limit entirely and needs no account. Steps actually run:
 
-Go to https://supabase.com/dashboard and create a new project dedicated to testing (not the `fdidwlxtravwznpsbwmc` project used by Render). Any region/plan works; this holds throwaway data only.
-
-- [ ] **Step 2: Get the connection string**
-
-In the new project: `Connect → Direct → Connection string → Session pooler`. Copy it.
-
-- [ ] **Step 3: Add it to `apps/mock-api/.env.local`**
-
-```env
-TEST_DATABASE_URL=postgresql://postgres.<new-project-ref>:<password>@<region>.pooler.supabase.com:5432/postgres
-```
-
-- [ ] **Step 4: Apply migrations to the test project**
+- [x] **Step 1: Install and start PostgreSQL locally**
 
 ```bash
-DATABASE_URL="$TEST_DATABASE_URL" pnpm --filter @damo/mock-api db:migrate
+brew install postgresql@16
+brew services start postgresql@16
 ```
 
-(Or temporarily set `TEST_DATABASE_URL`'s value as `DATABASE_URL` in `.env.local`, run `pnpm db:migrate`, then move it back to `TEST_DATABASE_URL` — either works, this just needs the schema from `apps/mock-api/migrations/` applied once.)
+- [x] **Step 2: Create a dedicated test database**
+
+```bash
+export PATH="/opt/homebrew/opt/postgresql@16/bin:$PATH"
+createdb damo_test
+```
+
+- [x] **Step 3: Add the connection string to `apps/mock-api/.env.local`**
+
+```env
+TEST_DATABASE_URL=postgresql://dongyunkwak@localhost:5432/damo_test
+```
+
+`config.ts`'s `isLocal` check (matches on `localhost`/`127.0.0.1`) disables SSL for this connection automatically, and no password is needed since Homebrew's default local Postgres uses trust/peer auth for the machine's own user.
+
+- [x] **Step 4: Stub the Supabase-only roles the migrations expect**
+
+`apps/mock-api/migrations/0001_initial.sql` ends with `revoke all on ... from anon, authenticated`, referencing roles that only exist on Supabase-hosted Postgres. A vanilla local Postgres needs them created as empty stub roles first:
+
+```bash
+psql -d damo_test -c "create role anon; create role authenticated;"
+```
+
+- [x] **Step 5: Apply migrations to the test database**
+
+```bash
+DATABASE_URL="postgresql://dongyunkwak@localhost:5432/damo_test" pnpm --filter @damo/mock-api db:migrate
+```
+
+Confirmed: both migrations applied, all 12 tables present (verified via `psql -d damo_test -c '\dt'`).
+
+If a Supabase project frees up later (or the account upgrades), the same `TEST_DATABASE_URL` env var can just point at a Session pooler connection string instead — nothing else in this plan depends on which Postgres it is.
 
 ---
 

@@ -1716,7 +1716,8 @@ export function MeetingDetailPage() {
   const isHost = meeting.role === "HOST";
 
   const copyInvite = async () => {
-    const text = `${meeting.name}\n가입 코드: ${meeting.joinCode}\n${meeting.shareUrl}`;
+    const shareUrl = `${window.location.origin}/meetings/join?meetingId=${meetingId}`;
+    const text = `${meeting.name}\n가입 코드: ${meeting.joinCode}\n${shareUrl}`;
     try {
       await navigator.clipboard.writeText(text);
     } catch {

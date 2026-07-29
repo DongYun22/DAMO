@@ -277,28 +277,24 @@ export class PostgresStore {
     const meetingResult = await client.query<{
       status: MeetingStatus;
       finalCandidateId: string | null;
+      memberId: string | null;
     }>(
       `
-        select status, final_candidate_id as "finalCandidateId"
-        from meetings
-        where id = $1 and status <> 'DELETED'
+        select m.status, m.final_candidate_id as "finalCandidateId", member.id as "memberId"
+        from meetings m
+        left join meeting_members member
+          on member.meeting_id = m.id
+          and member.user_id = $2
+          and member.status = 'ACTIVE'
+        where m.id = $1 and m.status <> 'DELETED'
       `,
-      [meetingId]
+      [meetingId, userId]
     );
     const meeting = meetingResult.rows[0];
     if (!meeting) {
       throw new StoreError(404, "MEETING_NOT_FOUND", "모임을 찾을 수 없습니다.");
     }
-
-    const memberResult = await client.query(
-      `
-        select 1
-        from meeting_members
-        where meeting_id = $1 and user_id = $2 and status = 'ACTIVE'
-      `,
-      [meetingId, userId]
-    );
-    if (memberResult.rowCount === 0) {
+    if (!meeting.memberId) {
       throw new StoreError(403, "MEETING_ACCESS_DENIED", "모임원이 아닙니다.");
     }
 

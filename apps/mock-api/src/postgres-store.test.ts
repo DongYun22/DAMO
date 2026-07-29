@@ -232,6 +232,8 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
       results.results.reduce((sum, item) => sum + item.voteCount, 0),
       2
     );
-    assert.equal(results.results.filter((item) => item.rank === 1).length >= 1, true);
+    assert.equal(results.results.filter((item) => item.rank === 1).length, 2);
+    assert.equal(results.tiedFirstCandidateIds.length, 2);
+    assert.equal(results.results.every((item) => item.isJointRank), true);
   });
 });

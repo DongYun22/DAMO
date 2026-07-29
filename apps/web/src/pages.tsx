@@ -376,7 +376,7 @@ export function MapPage() {
   const [searchParams] = useSearchParams();
   const meetingId = searchParams.get("meetingId") ?? "";
   const candidatePath = meetingId ? `/meetings/${meetingId}/candidates` : "";
-  const [query, setQuery] = useState("성수역");
+  const [query, setQuery] = useState("");
   const [places, setPlaces] = useState<Place[]>([]);
   const [saved, setSaved] = useState<UserPlace[]>([]);
   const [selected, setSelected] = useState<Place | null>(null);

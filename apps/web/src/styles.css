@@ -1059,6 +1059,29 @@ select {
   transform: rotate(-15deg);
 }
 
+.map-canvas__station {
+  position: absolute;
+  z-index: 3;
+  right: 14px;
+  bottom: 15px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 8px;
+  border-radius: 8px;
+  color: var(--primary);
+  background: rgba(255, 255, 255, 0.88);
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.map-canvas__station span {
+  width: 8px;
+  height: 8px;
+  border: 2px solid var(--primary);
+  border-radius: 50%;
+}
+
 .map-canvas__mode {
   position: absolute;
   z-index: 5;
@@ -3060,6 +3083,7 @@ body {
 }
 
 .naver-info-window,
+.map-canvas__station,
 .map-canvas__mode {
   border: 1px solid var(--glass-border);
   background: rgba(255, 255, 255, 0.72);

@@ -578,6 +578,10 @@ export function MapCanvas({
       <span className="map-canvas__road map-canvas__road--a" />
       <span className="map-canvas__road map-canvas__road--b" />
       <span className="map-canvas__road map-canvas__road--c" />
+      <span className="map-canvas__station">
+        <span />
+        성수역
+      </span>
       <span className="map-canvas__mode">
         {clientId && mapLoadFailed ? "지도 연결 실패 · 목 지도" : "목 지도"}
       </span>

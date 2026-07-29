@@ -236,4 +236,24 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
     assert.equal(results.tiedFirstCandidateIds.length, 2);
     assert.equal(results.results.every((item) => item.isJointRank), true);
   });
+
+  it("looks up a meeting by join code without loading the whole database", async () => {
+    const host = await store.signup("host-lookup", "호스트", "pw1234");
+    const meeting = await store.createMeeting(host.user.id, {
+      name: "조회 테스트",
+      capacity: 2,
+      meetingAt: "2026-08-01T10:00:00+09:00",
+      purpose: "CAFE",
+      mood: "QUIET"
+    });
+
+    const found = await store.lookupMeeting(meeting.joinCode!);
+    assert.equal(found.id, meeting.id);
+    assert.equal(found.currentMembers, 1);
+    assert.equal(found.canJoin, true);
+
+    await assert.rejects(() => store.lookupMeeting("0000"), (error: unknown) => {
+      return (error as { code?: string }).code === "MEETING_NOT_FOUND";
+    });
+  });
 });

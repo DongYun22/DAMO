@@ -1593,7 +1593,52 @@ export class PostgresStore {
   }
 
   async lookupMeeting(joinCode: string) {
-    return this.read((store) => store.lookupMeeting(joinCode));
+    const result = await this.pool.query<{
+      id: string;
+      name: string;
+      purpose: Purpose;
+      mood: Mood;
+      meetingAt: Date | string;
+      capacity: number;
+      status: MeetingStatus;
+      currentMembers: number;
+    }>(
+      `
+        select
+          m.id,
+          m.name,
+          m.purpose,
+          m.mood,
+          m.meeting_at as "meetingAt",
+          m.capacity,
+          m.status,
+          (
+            select count(*)::int
+            from meeting_members active_member
+            where active_member.meeting_id = m.id
+              and active_member.status = 'ACTIVE'
+          ) as "currentMembers"
+        from meetings m
+        where m.join_code = $1
+          and m.status not in ('COMPLETED', 'DELETED')
+        limit 1
+      `,
+      [joinCode]
+    );
+    const row = result.rows[0];
+    if (!row) {
+      throw new StoreError(404, "MEETING_NOT_FOUND", "가입 가능한 모임을 찾을 수 없습니다.");
+    }
+    return {
+      id: row.id,
+      name: row.name,
+      purpose: row.purpose,
+      mood: row.mood,
+      meetingAt: timestamp(row.meetingAt),
+      currentMembers: row.currentMembers,
+      capacity: row.capacity,
+      canJoin: row.status === "RECRUITING" && row.currentMembers < row.capacity
+    };
   }
 
   async joinMeeting(

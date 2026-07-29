@@ -140,7 +140,7 @@ const nextMonthlyMeetingAt = (meetingAt: string) => {
   return new Date(nextLocal - koreaOffsetMs).toISOString();
 };
 
-const nextRecurringMeetingAt = (
+export const nextRecurringMeetingAt = (
   meetingAt: string,
   recurrenceType: Exclude<RecurrenceType, "CUSTOM">
 ) => {

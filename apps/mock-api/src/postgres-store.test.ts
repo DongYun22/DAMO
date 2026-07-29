@@ -81,4 +81,85 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
   it("connects to the test database", async () => {
     await store.healthCheck();
   });
+
+  it("replaceMyCandidates and saveChoice still work after the lock refactor", async () => {
+    const host = await store.signup("host-lock", "호스트", "pw1234");
+    const guest = await store.signup("guest-lock", "게스트", "pw1234");
+    const meeting = await store.createMeeting(host.user.id, {
+      name: "락 테스트",
+      capacity: 4,
+      meetingAt: "2026-08-01T10:00:00+09:00",
+      purpose: "CAFE",
+      mood: "FUN"
+    });
+    const joined = await store.joinMeeting(
+      guest.user.id,
+      meeting.id,
+      meeting.joinCode!,
+      "게스트닉"
+    );
+    assert.equal(joined.members.length, 2);
+
+    const [placeA] = await store.upsertPlaces([
+      {
+        id: "place-lock-a",
+        naverPlaceId: "naver-lock-a",
+        name: "A카페",
+        category: "카페",
+        address: "서울",
+        roadAddress: "서울",
+        latitude: 37.5,
+        longitude: 127.0,
+        station: "강남",
+        distanceText: "1분"
+      }
+    ]);
+    const [placeB] = await store.upsertPlaces([
+      {
+        id: "place-lock-b",
+        naverPlaceId: "naver-lock-b",
+        name: "B카페",
+        category: "카페",
+        address: "서울",
+        roadAddress: "서울",
+        latitude: 37.6,
+        longitude: 127.1,
+        station: "역삼",
+        distanceText: "2분"
+      }
+    ]);
+    const hostPlace = await store.registerUserPlace(
+      host.user.id,
+      placeA!.naverPlaceId,
+      "CAFE",
+      "FUN"
+    );
+    const guestPlace = await store.registerUserPlace(
+      guest.user.id,
+      placeB!.naverPlaceId,
+      "CAFE",
+      "FUN"
+    );
+
+    const hostCandidates = await store.replaceMyCandidates(meeting.id, host.user.id, [
+      hostPlace.id
+    ]);
+    assert.equal(hostCandidates.length, 1);
+    const guestCandidates = await store.replaceMyCandidates(meeting.id, guest.user.id, [
+      guestPlace.id
+    ]);
+    assert.equal(guestCandidates.length, 2);
+
+    const vote = await store.createVote(meeting.id, host.user.id);
+    const session = await store.voteSession(meeting.id, host.user.id);
+    assert.ok(session.round);
+    const saved = await store.saveChoice(
+      meeting.id,
+      host.user.id,
+      1,
+      session.round!.candidateA.id
+    );
+    assert.equal(saved.completedRounds, 1);
+    assert.equal(vote.voteId.length > 0, true);
+  });
 });

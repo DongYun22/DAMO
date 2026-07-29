@@ -907,6 +907,28 @@ export class PostgresStore {
     }
   }
 
+  private async withMeetingLock<T>(
+    meetingId: string,
+    operation: (client: PoolClient) => Promise<T>
+  ): Promise<T> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      await client.query(
+        "select pg_advisory_xact_lock(hashtext($1))",
+        [`meeting:${meetingId}`]
+      );
+      const result = await operation(client);
+      await client.query("commit");
+      return result;
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
   private async read<T>(operation: (store: MockStore) => T): Promise<T> {
     const client = await this.pool.connect();
     try {
@@ -1672,13 +1694,7 @@ export class PostgresStore {
     if (uniqueIds.length > 2) {
       throw new StoreError(422, "CANDIDATE_LIMIT_EXCEEDED", "후보는 최대 2개까지 선택할 수 있습니다.");
     }
-    const client = await this.pool.connect();
-    try {
-      await client.query("begin");
-      await client.query(
-        "select pg_advisory_xact_lock(hashtext($1))",
-        [`candidate:${meetingId}`]
-      );
+    await this.withMeetingLock(meetingId, async (client) => {
       const context = await client.query<{
         status: MeetingStatus;
         memberId: string;
@@ -1779,13 +1795,7 @@ export class PostgresStore {
       await client.query("update meetings set updated_at = now() where id = $1", [
         meetingId
       ]);
-      await client.query("commit");
-    } catch (error) {
-      await client.query("rollback");
-      throw error;
-    } finally {
-      client.release();
-    }
+    });
     return this.publicCandidates(meetingId, userId);
   }
 
@@ -1808,12 +1818,7 @@ export class PostgresStore {
     roundNumber: number,
     selectedCandidateId: string
   ) {
-    const client = await this.pool.connect();
-    try {
-      await client.query("begin");
-      await client.query(
-        "select pg_advisory_xact_lock(hashtext('damo-store-write'))"
-      );
+    await this.withMeetingLock(meetingId, async (client) => {
       const meetingResult = await client.query<{ status: MeetingStatus }>(
         `
           select status
@@ -1937,13 +1942,7 @@ export class PostgresStore {
           [meetingId]
         );
       }
-      await client.query("commit");
-    } catch (error) {
-      await client.query("rollback");
-      throw error;
-    } finally {
-      client.release();
-    }
+    });
     return this.voteSession(meetingId, userId);
   }
 

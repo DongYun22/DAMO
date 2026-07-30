@@ -1166,23 +1166,6 @@ export class PostgresStore {
     );
   }
 
-  private async read<T>(operation: (store: MockStore) => T): Promise<T> {
-    const client = await this.pool.connect();
-    try {
-      await client.query("begin transaction isolation level repeatable read read only");
-      const store = new MockStore();
-      store.hydrate(await this.loadSnapshot(client));
-      const result = operation(store);
-      await client.query("commit");
-      return result;
-    } catch (error) {
-      await client.query("rollback");
-      throw error;
-    } finally {
-      client.release();
-    }
-  }
-
   private async write<T>(
     operation: (store: MockStore) => T | Promise<T>,
     replaceAll = false
@@ -2899,7 +2882,13 @@ export class PostgresStore {
   async voteResults(meetingId: string, userId: string) {
     const client = await this.pool.connect();
     try {
-      return await this.computeVoteResults(client, meetingId, userId);
+      await client.query("begin transaction isolation level repeatable read read only");
+      const result = await this.computeVoteResults(client, meetingId, userId);
+      await client.query("commit");
+      return result;
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
     } finally {
       client.release();
     }

@@ -322,6 +322,135 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
     assert.equal(results.results.every((item) => item.isJointRank), true);
   });
 
+  it("keeps voteResults' repeatable-read snapshot consistent when a concurrent write commits mid-computation", async () => {
+    // voteResults() (unlike computeVoteResults() called from inside
+    // closeVote/finalSelection's own transaction) owns its own connection
+    // and must wrap it in a repeatable-read read-only transaction, or its
+    // five underlying queries could each auto-commit independently at READ
+    // COMMITTED and mix pre- and post-commit state. This test proves the
+    // snapshot really is fixed for the whole call: it stalls
+    // computeVoteResults' *last* query (queryPublicCandidates, reached via a
+    // mocked delay) after its earlier queries have already run inside the
+    // transaction, commits a brand-new recommendation on a second raw
+    // connection while it's stalled, and asserts the delayed query still
+    // does not see that concurrent commit.
+    const host = await store.signup("host-results-race", "호스트", "pw1234");
+    const guest = await store.signup("guest-results-race", "게스트", "pw1234");
+    const meeting = await store.createMeeting(host.user.id, {
+      name: "결과 경합 테스트",
+      capacity: 4,
+      meetingAt: "2026-08-01T10:00:00+09:00",
+      purpose: "MEAL",
+      mood: "FUN"
+    });
+    await store.joinMeeting(guest.user.id, meeting.id, meeting.joinCode!, "게스트닉");
+
+    const [placeA] = await store.upsertPlaces([
+      {
+        id: "place-results-race-a",
+        naverPlaceId: "naver-results-race-a",
+        name: "가나다식당",
+        category: "식당",
+        address: "서울",
+        roadAddress: "서울",
+        latitude: 37.5,
+        longitude: 127.0,
+        station: "강남",
+        distanceText: "1분"
+      }
+    ]);
+    const [placeB] = await store.upsertPlaces([
+      {
+        id: "place-results-race-b",
+        naverPlaceId: "naver-results-race-b",
+        name: "마바사식당",
+        category: "식당",
+        address: "서울",
+        roadAddress: "서울",
+        latitude: 37.6,
+        longitude: 127.1,
+        station: "역삼",
+        distanceText: "2분"
+      }
+    ]);
+    const hostPlace = await store.registerUserPlace(host.user.id, placeA!.naverPlaceId, "MEAL", "FUN");
+    const guestPlace = await store.registerUserPlace(guest.user.id, placeB!.naverPlaceId, "MEAL", "FUN");
+    await store.replaceMyCandidates(meeting.id, host.user.id, [hostPlace.id]);
+    await store.replaceMyCandidates(meeting.id, guest.user.id, [guestPlace.id]);
+    await store.createVote(meeting.id, host.user.id);
+
+    const candidatesBefore = await store.publicCandidates(meeting.id, host.user.id);
+    const hostCandidate = candidatesBefore.find((item) => item.recommendedByMe)!;
+    assert.equal(hostCandidate.recommendationCount, 1);
+
+    const detail = await store.detail(meeting.id, host.user.id);
+    const guestMember = detail.members.find((member) => member.userId === guest.user.id)!;
+
+    // Reach into the private queryPublicCandidates method (the last query
+    // computeVoteResults issues) and delay it, so the concurrent insert
+    // below has a guaranteed window to commit while voteResults' own
+    // transaction is still open but has already executed its earlier
+    // queries.
+    const storeInternals = store as unknown as {
+      queryPublicCandidates: (...args: unknown[]) => Promise<unknown>;
+    };
+    const originalQueryPublicCandidates = storeInternals.queryPublicCandidates.bind(store);
+    const queryMock = mock.method(
+      storeInternals,
+      "queryPublicCandidates",
+      async (...args: unknown[]) => {
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        return originalQueryPublicCandidates(...args);
+      }
+    );
+
+    let results: Awaited<ReturnType<typeof store.voteResults>>;
+    try {
+      const resultsPromise = store.voteResults(meeting.id, host.user.id);
+
+      // Give computeVoteResults time to run its meeting/vote/session/vote-
+      // count queries and reach the mocked, delayed queryPublicCandidates
+      // call before we commit the concurrent write.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const blocker = new Client({ connectionString: testDatabaseUrl });
+      await blocker.connect();
+      try {
+        await blocker.query(
+          `
+            insert into candidate_recommendations
+              (candidate_id, member_id, user_place_id, purpose, mood)
+            values ($1, $2, $3, 'MEAL', 'FUN')
+          `,
+          [hostCandidate.id, guestMember.id, guestPlace.id]
+        );
+      } finally {
+        await blocker.end();
+      }
+
+      results = await resultsPromise;
+    } finally {
+      queryMock.mock.restore();
+    }
+
+    const hostCandidateResult = results.results.find(
+      (item) => item.candidate.id === hostCandidate.id
+    )!;
+    assert.equal(
+      hostCandidateResult.recommendationCount,
+      1,
+      "voteResults' repeatable-read snapshot must not observe a recommendation committed after computeVoteResults started"
+    );
+
+    // Sanity check: the concurrent insert really did commit -- a fresh,
+    // unmocked voteResults call (a brand-new snapshot) must see it.
+    const resultsAfter = await store.voteResults(meeting.id, host.user.id);
+    const hostCandidateAfter = resultsAfter.results.find(
+      (item) => item.candidate.id === hostCandidate.id
+    )!;
+    assert.equal(hostCandidateAfter.recommendationCount, 2);
+  });
+
   it("closes a vote with a single winner and rejects incomplete closes without force", async () => {
     const host = await store.signup("host-close", "호스트", "pw1234");
     const guest = await store.signup("guest-close", "게스트", "pw1234");

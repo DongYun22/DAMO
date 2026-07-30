@@ -1341,4 +1341,106 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
     assert.equal(listed!.purpose, "MEAL");
     assert.equal(listed!.mood, "FUN");
   });
+
+  it("rejects updateUserPlace with USER_PLACE_NOT_FOUND for a nonexistent userPlaceId", async () => {
+    const host = await store.signup("host-update-no-place", "호스트", "pw1234");
+
+    await assert.rejects(
+      () =>
+        store.updateUserPlace(
+          host.user.id,
+          "00000000-0000-0000-0000-000000000000",
+          "MEAL",
+          "FUN",
+          []
+        ),
+      (error: unknown) => (error as { code?: string }).code === "USER_PLACE_NOT_FOUND"
+    );
+  });
+
+  it("rejects updateUserPlace with MEETING_NOT_FOUND when applyToMeetingIds names a nonexistent meeting", async () => {
+    const host = await store.signup("host-update-no-meeting", "호스트", "pw1234");
+    const [place] = await store.upsertPlaces([
+      {
+        id: "place-update-no-meeting-a",
+        naverPlaceId: "naver-update-no-meeting-a",
+        name: "라카페",
+        category: "카페",
+        address: "서울",
+        roadAddress: "서울",
+        latitude: 37.5,
+        longitude: 127.0,
+        station: "강남",
+        distanceText: "1분"
+      }
+    ]);
+    const hostPlace = await store.registerUserPlace(host.user.id, place!.naverPlaceId, "CAFE", "QUIET");
+
+    await assert.rejects(
+      () =>
+        store.updateUserPlace(
+          host.user.id,
+          hostPlace.id,
+          "MEAL",
+          "FUN",
+          ["00000000-0000-0000-0000-000000000000"]
+        ),
+      (error: unknown) => (error as { code?: string }).code === "MEETING_NOT_FOUND"
+    );
+  });
+
+  it("rolls back the whole updateUserPlace transaction (including the user_places row) when one of several meeting ids is invalid", async () => {
+    const host = await store.signup("host-update-rollback", "호스트", "pw1234");
+    const meeting = await store.createMeeting(host.user.id, {
+      name: "장소수정 롤백 테스트",
+      capacity: 2,
+      meetingAt: "2026-08-01T10:00:00+09:00",
+      purpose: "CAFE",
+      mood: "QUIET"
+    });
+    const [place] = await store.upsertPlaces([
+      {
+        id: "place-update-rollback-a",
+        naverPlaceId: "naver-update-rollback-a",
+        name: "마카페",
+        category: "카페",
+        address: "서울",
+        roadAddress: "서울",
+        latitude: 37.5,
+        longitude: 127.0,
+        station: "강남",
+        distanceText: "1분"
+      }
+    ]);
+    const hostPlace = await store.registerUserPlace(host.user.id, place!.naverPlaceId, "CAFE", "QUIET");
+    await store.replaceMyCandidates(meeting.id, host.user.id, [hostPlace.id]);
+
+    // meeting.id is a valid, RECRUITING meeting so it would be processed
+    // successfully by the per-meeting loop; the second id does not exist.
+    // Because the user_places row is updated before the per-meeting loop
+    // even starts, a naive fix that only rolled back the loop's own work
+    // (or didn't roll back at all) would still leave purpose/mood changed
+    // to MEAL/FUN here even though the whole call rejected.
+    await assert.rejects(
+      () =>
+        store.updateUserPlace(
+          host.user.id,
+          hostPlace.id,
+          "MEAL",
+          "FUN",
+          [meeting.id, "00000000-0000-0000-0000-000000000000"]
+        ),
+      (error: unknown) => (error as { code?: string }).code === "MEETING_NOT_FOUND"
+    );
+
+    const [listed] = await store.listUserPlaces(host.user.id);
+    assert.equal(listed!.purpose, "CAFE");
+    assert.equal(listed!.mood, "QUIET");
+
+    // The RECRUITING meeting's candidate should also be untouched: the
+    // rollback must undo any per-meeting work done before the invalid id
+    // was hit, not just leave user_places alone.
+    const candidates = await store.publicCandidates(meeting.id, host.user.id);
+    assert.equal(candidates.length, 1);
+  });
 });

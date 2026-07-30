@@ -1255,6 +1255,13 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
     await store.replaceMyCandidates(meetingC.id, host.user.id, [hostPlace.id, hostPlace2.id]);
 
     await store.createVote(meetingC.id, host.user.id);
+    // Capture each meeting's updated_at before the call so we can later prove
+    // the RECRUITING meetings' rows were actually touched by the loop while
+    // meetingC's (the `continue`-skipped one) was not — publicCandidates
+    // alone can't distinguish "updated in place" from "left untouched" here,
+    // since Candidate has no purpose/mood field of its own to compare.
+    const meetingABeforeUpdate = await store.detail(meetingA.id, host.user.id);
+    const meetingBBeforeUpdate = await store.detail(meetingB.id, host.user.id);
     const meetingCBeforeUpdate = await store.detail(meetingC.id, host.user.id);
     assert.equal(meetingCBeforeUpdate.status, "VOTING");
 
@@ -1277,23 +1284,38 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
     const candidatesB = await store.publicCandidates(meetingB.id, host.user.id);
     assert.equal(candidatesB.length, 1);
 
+    // meetingA and meetingB were RECRUITING, so each should have hit the
+    // `update meetings set updated_at = now()` line at the end of the loop
+    // body for that meeting.
+    const meetingAAfterUpdate = await store.detail(meetingA.id, host.user.id);
+    const meetingBAfterUpdate = await store.detail(meetingB.id, host.user.id);
+    assert.notEqual(meetingAAfterUpdate.updatedAt, meetingABeforeUpdate.updatedAt);
+    assert.notEqual(meetingBAfterUpdate.updatedAt, meetingBBeforeUpdate.updatedAt);
+
     // meetingC was VOTING (not RECRUITING) at call time, so the loop should
     // have taken the `continue` branch for it without throwing — its
     // candidates and status are untouched, and the two RECRUITING meetings
-    // were still updated in the same call.
+    // were still updated in the same call. Critically, meetingC's updated_at
+    // must be unchanged too: `continue` skips both the
+    // candidate_recommendations update and the meetings.updated_at bump, so
+    // if the guard were ever removed, this assertion would fail even though
+    // publicCandidates alone can't detect the difference.
     const candidatesC = await store.publicCandidates(meetingC.id, host.user.id);
     assert.equal(candidatesC.length, 2);
     const meetingCAfterUpdate = await store.detail(meetingC.id, host.user.id);
     assert.equal(meetingCAfterUpdate.status, "VOTING");
+    assert.equal(meetingCAfterUpdate.updatedAt, meetingCBeforeUpdate.updatedAt);
   });
 
-  it("updates a user place with an empty applyToMeetingIds, touching no meeting locks", async () => {
+  it("updates a user place with an empty applyToMeetingIds, updating only the user_places row", async () => {
     // The server's route defaults applyToMeetingIds to [] (server.ts), so
     // this is the common "edit my saved place without applying it anywhere"
-    // path, not just an edge case. With no meeting ids, the sorted-id array
-    // is empty, so the per-meeting advisory-lock loop and the per-meeting
-    // update loop both iterate zero times — only the user_places row itself
-    // should change.
+    // path, not just an edge case. This test only checks that the call
+    // succeeds with an empty list and that user_places ends up with the new
+    // purpose/mood — it does NOT verify that no locks were taken or that the
+    // per-meeting loops ran zero times (there's no lock/loop instrumentation
+    // here to observe that; with zero meeting ids that behavior follows
+    // directly from reading the implementation, not from this assertion).
     const host = await store.signup("host-update-empty", "호스트", "pw1234");
     const [place] = await store.upsertPlaces([
       {

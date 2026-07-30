@@ -1609,13 +1609,78 @@ export class PostgresStore {
     userPlaceId: string,
     applyToActiveMeetings: boolean
   ) {
-    return this.write((store) =>
-      store.unregisterUserPlace(
-        userId,
-        userPlaceId,
-        applyToActiveMeetings
-      )
-    );
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+
+      let meetingIds: string[] = [];
+      if (applyToActiveMeetings) {
+        const meetingsResult = await client.query<{ id: string }>(
+          `
+            select distinct m.id
+            from meetings m
+            join meeting_members member
+              on member.meeting_id = m.id and member.user_id = $1 and member.status = 'ACTIVE'
+            where m.status = 'RECRUITING'
+            order by m.id
+          `,
+          [userId]
+        );
+        meetingIds = meetingsResult.rows.map((row) => row.id);
+        for (const meetingId of meetingIds) {
+          await client.query("select pg_advisory_xact_lock(hashtext($1))", [`meeting:${meetingId}`]);
+        }
+      }
+
+      const placeResult = await client.query<{ userPlaceId: string }>(
+        `
+          update user_places
+          set is_active = false, updated_at = now()
+          where id = $1 and user_id = $2 and is_active = true
+          returning id as "userPlaceId"
+        `,
+        [userPlaceId, userId]
+      );
+      if (!placeResult.rows[0]) {
+        throw new StoreError(404, "USER_PLACE_NOT_FOUND", "저장된 장소를 찾을 수 없습니다.");
+      }
+
+      for (const meetingId of meetingIds) {
+        await client.query(
+          `
+            delete from candidate_recommendations recommendation
+            using meeting_candidates candidate, meeting_members member
+            where recommendation.candidate_id = candidate.id
+              and recommendation.member_id = member.id
+              and candidate.meeting_id = $1
+              and member.meeting_id = $1
+              and member.user_id = $2
+              and member.status = 'ACTIVE'
+              and recommendation.user_place_id = $3
+          `,
+          [meetingId, userId, userPlaceId]
+        );
+        await client.query(
+          `
+            delete from meeting_candidates candidate
+            where candidate.meeting_id = $1
+              and not exists (
+                select 1 from candidate_recommendations r where r.candidate_id = candidate.id
+              )
+          `,
+          [meetingId]
+        );
+        await client.query(`update meetings set updated_at = now() where id = $1`, [meetingId]);
+      }
+
+      await client.query("commit");
+      return { userPlaceId, unregistered: true, appliedToActiveMeetings: applyToActiveMeetings };
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   async home(userId: string) {

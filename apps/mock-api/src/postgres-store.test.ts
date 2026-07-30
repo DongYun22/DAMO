@@ -1443,4 +1443,291 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
     const candidates = await store.publicCandidates(meeting.id, host.user.id);
     assert.equal(candidates.length, 1);
   });
+
+  it("unregisters a user place and removes it from an active candidate when requested", async () => {
+    const host = await store.signup("host-unregister-place", "호스트", "pw1234");
+    const meeting = await store.createMeeting(host.user.id, {
+      name: "등록해제 테스트",
+      capacity: 2,
+      meetingAt: "2026-08-01T10:00:00+09:00",
+      purpose: "DRINK",
+      mood: "TIPSY"
+    });
+    const [place] = await store.upsertPlaces([
+      {
+        id: "place-unregister-a",
+        naverPlaceId: "naver-unregister-a",
+        name: "가호프",
+        category: "호프",
+        address: "서울",
+        roadAddress: "서울",
+        latitude: 37.5,
+        longitude: 127.0,
+        station: "강남",
+        distanceText: "1분"
+      }
+    ]);
+    const hostPlace = await store.registerUserPlace(host.user.id, place!.naverPlaceId, "DRINK", "TIPSY");
+    await store.replaceMyCandidates(meeting.id, host.user.id, [hostPlace.id]);
+
+    const result = await store.unregisterUserPlace(host.user.id, hostPlace.id, true);
+    assert.equal(result.unregistered, true);
+    assert.equal(result.appliedToActiveMeetings, true);
+
+    const candidates = await store.publicCandidates(meeting.id, host.user.id);
+    assert.equal(candidates.length, 0);
+
+    const places = await store.listUserPlaces(host.user.id);
+    assert.equal(places.some((item) => item.id === hostPlace.id), false);
+  });
+
+  it("unregisters a user place with applyToActiveMeetings=false, leaving every meeting's candidates untouched", async () => {
+    // This is the counterpart to the test above: with the flag off, the
+    // method must still deactivate the user_places row, but it must not even
+    // look up affected meetings (meetingIds stays []), so the per-meeting
+    // delete loop never runs. We verify both the "still deactivated" half
+    // and the "meeting truly untouched" half — including updated_at, not
+    // just candidate count, since a bug that emptied meetingIds but still
+    // bumped updated_at for some unrelated reason wouldn't be caught by
+    // candidate count alone.
+    const host = await store.signup("host-unregister-noapply", "호스트", "pw1234");
+    const meeting = await store.createMeeting(host.user.id, {
+      name: "등록해제 미적용 테스트",
+      capacity: 2,
+      meetingAt: "2026-08-01T10:00:00+09:00",
+      purpose: "DRINK",
+      mood: "TIPSY"
+    });
+    const [place] = await store.upsertPlaces([
+      {
+        id: "place-unregister-noapply-a",
+        naverPlaceId: "naver-unregister-noapply-a",
+        name: "나호프",
+        category: "호프",
+        address: "서울",
+        roadAddress: "서울",
+        latitude: 37.5,
+        longitude: 127.0,
+        station: "강남",
+        distanceText: "1분"
+      }
+    ]);
+    const hostPlace = await store.registerUserPlace(host.user.id, place!.naverPlaceId, "DRINK", "TIPSY");
+    await store.replaceMyCandidates(meeting.id, host.user.id, [hostPlace.id]);
+
+    const meetingBeforeUnregister = await store.detail(meeting.id, host.user.id);
+
+    const result = await store.unregisterUserPlace(host.user.id, hostPlace.id, false);
+    assert.equal(result.unregistered, true);
+    assert.equal(result.appliedToActiveMeetings, false);
+
+    // The user_places row is deactivated regardless of the flag.
+    const places = await store.listUserPlaces(host.user.id);
+    assert.equal(places.some((item) => item.id === hostPlace.id), false);
+
+    // But the meeting's candidate — and the meeting row itself — must be
+    // completely untouched.
+    const candidates = await store.publicCandidates(meeting.id, host.user.id);
+    assert.equal(candidates.length, 1);
+    const meetingAfterUnregister = await store.detail(meeting.id, host.user.id);
+    assert.equal(meetingAfterUnregister.updatedAt, meetingBeforeUnregister.updatedAt);
+  });
+
+  it("with applyToActiveMeetings=true, only touches RECRUITING meetings where the caller is still an ACTIVE member", async () => {
+    // Three meetings exercise the three cases the affected-meeting SELECT
+    // must distinguish:
+    //   - meetingA: RECRUITING, host is ACTIVE  -> included, mutated.
+    //   - meetingB: VOTING (not RECRUITING), host is ACTIVE -> excluded by
+    //     the `m.status = 'RECRUITING'` filter.
+    //   - meetingC: RECRUITING, but host's membership there is LEFT (not
+    //     ACTIVE) -> excluded by the `member.status = 'ACTIVE'` join filter.
+    // For meetingC specifically: if the ACTIVE-membership filter were ever
+    // dropped from the SELECT, meetingC's id would land in meetingIds, and
+    // the loop unconditionally runs `update meetings set updated_at = now()`
+    // for every id in that list — regardless of whether the per-meeting
+    // delete queries (which re-check member.status = 'ACTIVE' and therefore
+    // wouldn't have deleted anything) found rows to remove. So checking
+    // meetingC's updated_at is a direct probe of the SELECT's own filter,
+    // not just of the delete queries' redundant guard.
+    const host = await store.signup("host-unregister-multi", "호스트", "pw1234");
+    const other = await store.signup("other-unregister-multi", "다른유저", "pw1234");
+
+    const meetingA = await store.createMeeting(host.user.id, {
+      name: "등록해제 다중 테스트 A",
+      capacity: 2,
+      meetingAt: "2026-08-01T10:00:00+09:00",
+      purpose: "DRINK",
+      mood: "TIPSY"
+    });
+    const meetingB = await store.createMeeting(host.user.id, {
+      name: "등록해제 다중 테스트 B",
+      capacity: 2,
+      meetingAt: "2026-08-02T10:00:00+09:00",
+      purpose: "DRINK",
+      mood: "TIPSY"
+    });
+    const meetingC = await store.createMeeting(other.user.id, {
+      name: "등록해제 다중 테스트 C",
+      capacity: 2,
+      meetingAt: "2026-08-03T10:00:00+09:00",
+      purpose: "DRINK",
+      mood: "TIPSY"
+    });
+
+    const [placeA] = await store.upsertPlaces([
+      {
+        id: "place-unregister-multi-a",
+        naverPlaceId: "naver-unregister-multi-a",
+        name: "다호프",
+        category: "호프",
+        address: "서울",
+        roadAddress: "서울",
+        latitude: 37.5,
+        longitude: 127.0,
+        station: "강남",
+        distanceText: "1분"
+      }
+    ]);
+    const [placeB] = await store.upsertPlaces([
+      {
+        id: "place-unregister-multi-b",
+        naverPlaceId: "naver-unregister-multi-b",
+        name: "라호프",
+        category: "호프",
+        address: "서울",
+        roadAddress: "서울",
+        latitude: 37.6,
+        longitude: 127.1,
+        station: "역삼",
+        distanceText: "2분"
+      }
+    ]);
+
+    const hostPlace = await store.registerUserPlace(host.user.id, placeA!.naverPlaceId, "DRINK", "TIPSY");
+    const hostPlace2 = await store.registerUserPlace(host.user.id, placeB!.naverPlaceId, "DRINK", "TIPSY");
+
+    // meetingA: only hostPlace, stays RECRUITING -> will be mutated.
+    await store.replaceMyCandidates(meetingA.id, host.user.id, [hostPlace.id]);
+    // meetingB: hostPlace + hostPlace2 (2 distinct candidates so createVote
+    // succeeds), then moved to VOTING before the unregister call.
+    await store.replaceMyCandidates(meetingB.id, host.user.id, [hostPlace.id, hostPlace2.id]);
+    await store.createVote(meetingB.id, host.user.id);
+
+    // meetingC: host joins as a regular member, adds hostPlace as their
+    // candidate, then leaves — leaving RECRUITING intact but host's own
+    // membership status LEFT (not ACTIVE).
+    await store.joinMeeting(host.user.id, meetingC.id, meetingC.joinCode!, "호스트");
+    await store.replaceMyCandidates(meetingC.id, host.user.id, [hostPlace.id]);
+    await store.leaveMeeting(meetingC.id, host.user.id);
+
+    const meetingABefore = await store.detail(meetingA.id, host.user.id);
+    const meetingBBefore = await store.detail(meetingB.id, host.user.id);
+    assert.equal(meetingBBefore.status, "VOTING");
+    // host is no longer an ACTIVE member of meetingC, so detail() (which
+    // only lists ACTIVE memberships) can't be called with host's id anymore;
+    // query meetingC's state through its host ("other") instead, since
+    // updated_at is a property of the meeting row, not of any one member.
+    const meetingCBefore = await store.detail(meetingC.id, other.user.id);
+    assert.equal(meetingCBefore.status, "RECRUITING");
+
+    const result = await store.unregisterUserPlace(host.user.id, hostPlace.id, true);
+    assert.equal(result.unregistered, true);
+    assert.equal(result.appliedToActiveMeetings, true);
+
+    // meetingA: mutated — candidate removed, updated_at bumped.
+    const candidatesA = await store.publicCandidates(meetingA.id, host.user.id);
+    assert.equal(candidatesA.length, 0);
+    const meetingAAfter = await store.detail(meetingA.id, host.user.id);
+    assert.notEqual(meetingAAfter.updatedAt, meetingABefore.updatedAt);
+
+    // meetingB: untouched — both candidates remain, updated_at unchanged.
+    const candidatesB = await store.publicCandidates(meetingB.id, host.user.id);
+    assert.equal(candidatesB.length, 2);
+    const meetingBAfter = await store.detail(meetingB.id, host.user.id);
+    assert.equal(meetingBAfter.updatedAt, meetingBBefore.updatedAt);
+
+    // meetingC: untouched — updated_at unchanged (checked via "other", the
+    // still-ACTIVE host of meetingC).
+    const meetingCAfter = await store.detail(meetingC.id, other.user.id);
+    assert.equal(meetingCAfter.updatedAt, meetingCBefore.updatedAt);
+  });
+
+  it("rejects unregisterUserPlace with USER_PLACE_NOT_FOUND for a nonexistent userPlaceId", async () => {
+    const host = await store.signup("host-unregister-no-place", "호스트", "pw1234");
+
+    await assert.rejects(
+      () => store.unregisterUserPlace(host.user.id, "00000000-0000-0000-0000-000000000000", false),
+      (error: unknown) => (error as { code?: string }).code === "USER_PLACE_NOT_FOUND"
+    );
+    await assert.rejects(
+      () => store.unregisterUserPlace(host.user.id, "00000000-0000-0000-0000-000000000000", true),
+      (error: unknown) => (error as { code?: string }).code === "USER_PLACE_NOT_FOUND"
+    );
+  });
+
+  it("rejects unregisterUserPlace with USER_PLACE_NOT_FOUND when the place is already inactive, and leaves an active meeting untouched", async () => {
+    // Calling unregister twice (or on an already-unregistered place) should
+    // fail the same way a truly nonexistent id would — the `is_active =
+    // true` guard in the UPDATE means a second call finds no row. This also
+    // doubles as a rollback-shape check: applyToActiveMeetings=true means
+    // the meeting lock is taken and the meeting lookup runs before the
+    // failing update, so we confirm the RECRUITING meeting's candidate and
+    // updated_at survive the rejected call untouched.
+    const host = await store.signup("host-unregister-twice", "호스트", "pw1234");
+    const meeting = await store.createMeeting(host.user.id, {
+      name: "등록해제 재시도 테스트",
+      capacity: 2,
+      meetingAt: "2026-08-01T10:00:00+09:00",
+      purpose: "DRINK",
+      mood: "TIPSY"
+    });
+    const [place] = await store.upsertPlaces([
+      {
+        id: "place-unregister-twice-a",
+        naverPlaceId: "naver-unregister-twice-a",
+        name: "마호프",
+        category: "호프",
+        address: "서울",
+        roadAddress: "서울",
+        latitude: 37.5,
+        longitude: 127.0,
+        station: "강남",
+        distanceText: "1분"
+      }
+    ]);
+    const hostPlace = await store.registerUserPlace(host.user.id, place!.naverPlaceId, "DRINK", "TIPSY");
+    // A second, still-active place is what keeps meeting's candidate list
+    // non-empty after the first unregister call below.
+    const [place2] = await store.upsertPlaces([
+      {
+        id: "place-unregister-twice-b",
+        naverPlaceId: "naver-unregister-twice-b",
+        name: "바호프",
+        category: "호프",
+        address: "서울",
+        roadAddress: "서울",
+        latitude: 37.6,
+        longitude: 127.1,
+        station: "역삼",
+        distanceText: "2분"
+      }
+    ]);
+    const hostPlace2 = await store.registerUserPlace(host.user.id, place2!.naverPlaceId, "DRINK", "TIPSY");
+    await store.replaceMyCandidates(meeting.id, host.user.id, [hostPlace.id, hostPlace2.id]);
+
+    await store.unregisterUserPlace(host.user.id, hostPlace.id, true);
+    const meetingBefore = await store.detail(meeting.id, host.user.id);
+    const candidatesBefore = await store.publicCandidates(meeting.id, host.user.id);
+    assert.equal(candidatesBefore.length, 1);
+
+    await assert.rejects(
+      () => store.unregisterUserPlace(host.user.id, hostPlace.id, true),
+      (error: unknown) => (error as { code?: string }).code === "USER_PLACE_NOT_FOUND"
+    );
+
+    const meetingAfter = await store.detail(meeting.id, host.user.id);
+    const candidatesAfter = await store.publicCandidates(meeting.id, host.user.id);
+    assert.equal(candidatesAfter.length, 1);
+    assert.equal(meetingAfter.updatedAt, meetingBefore.updatedAt);
+  });
 });

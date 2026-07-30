@@ -1428,7 +1428,7 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
           hostPlace.id,
           "MEAL",
           "FUN",
-          [meeting.id, "00000000-0000-0000-0000-000000000000"]
+          [meeting.id, "ffffffff-ffff-ffff-ffff-ffffffffffff"]
         ),
       (error: unknown) => (error as { code?: string }).code === "MEETING_NOT_FOUND"
     );

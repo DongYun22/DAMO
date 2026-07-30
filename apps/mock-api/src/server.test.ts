@@ -200,6 +200,46 @@ describe("DAMO mock API", () => {
     assert.equal(nextOccurrence.meetingAt, "2026-08-10T04:30:00.000Z");
   });
 
+  it("regularizes an ongoing meeting without creating a new round immediately", async () => {
+    await store.reset();
+    const created = await request("/api/v1/meetings", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "정기화할 모임",
+        capacity: 4,
+        meetingAt: "2099-08-02T19:30:00+09:00",
+        purpose: "MEAL",
+        mood: "FUN"
+      })
+    });
+    const createdBody = await created.json();
+    const response = await request(
+      `/api/v1/meetings/${createdBody.data.id}/recurrence`,
+      {
+        method: "PUT",
+        body: JSON.stringify({
+          recurrence: { type: "WEEKLY" }
+        })
+      }
+    );
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.data.id, createdBody.data.id);
+    assert.equal(body.data.joinCode, createdBody.data.joinCode);
+    assert.equal(body.data.recurrence.type, "WEEKLY");
+    assert.equal(body.data.parentMeetingId, null);
+
+    const home = await request("/api/v1/me/home");
+    const homeBody = await home.json();
+    assert.equal(
+      homeBody.data.ongoingMeetings.some(
+        (meeting: { parentMeetingId: string | null }) =>
+          meeting.parentMeetingId === createdBody.data.id
+      ),
+      false
+    );
+  });
+
   it("registers a searched NAVER place and returns it from My Places", async () => {
     await store.reset();
     const searchedPlace: Place = {
@@ -299,6 +339,19 @@ describe("DAMO mock API", () => {
           candidate.place.id === "place-2" && candidate.recommendedByMe
       ),
       true
+    );
+  });
+
+  it("lists only pre-vote meetings where the My Place is already my candidate", async () => {
+    await store.reset();
+    const response = await request(
+      "/api/v1/me/places/up-2/candidate-meetings"
+    );
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.deepEqual(
+      body.data.map((meeting: { id: string }) => meeting.id),
+      ["meeting-1"]
     );
   });
 

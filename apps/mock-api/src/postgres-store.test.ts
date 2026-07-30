@@ -511,10 +511,9 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
     assert.equal(resultsA.meetingStatus, "COMPLETED");
 
     // --- Repeat meeting A into meeting B with WEEKLY recurrence. ---
-    // repeatMeeting still runs on the legacy snapshot write() path (not part
-    // of this task's conversion scope); it's only used here as test setup to
-    // reach a meeting with recurrenceType set, since that field can't be set
-    // via plain createMeeting.
+    // repeatMeeting is SQL-backed as of Task 17; it's used here as test setup
+    // to reach a meeting with recurrenceType set, since that field can't be
+    // set via plain createMeeting.
     const detailA = await store.detail(meetingA.id, host.user.id);
     const hostMemberA = detailA.members.find((member) => member.role === "HOST")!;
     const meetingB = await store.repeatMeeting(meetingA.id, host.user.id, {
@@ -720,10 +719,9 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
     assert.equal(resultsA.meetingStatus, "COMPLETED");
 
     // --- Repeat meeting A into meeting B with WEEKLY recurrence. ---
-    // repeatMeeting still runs on the legacy snapshot write() path (not part
-    // of this task's conversion scope); it's only used here as test setup to
-    // reach a meeting with recurrenceType set, since that field can't be set
-    // via plain createMeeting.
+    // repeatMeeting is SQL-backed as of Task 17; it's used here as test setup
+    // to reach a meeting with recurrenceType set, since that field can't be
+    // set via plain createMeeting.
     const detailA = await store.detail(meetingA.id, host.user.id);
     const hostMemberA = detailA.members.find((member) => member.role === "HOST")!;
     const meetingB = await store.repeatMeeting(meetingA.id, host.user.id, {

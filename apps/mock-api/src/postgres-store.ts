@@ -2596,13 +2596,82 @@ export class PostgresStore {
     });
   }
 
-  async finalSelection(
-    meetingId: string,
-    userId: string,
-    candidateId: string
-  ) {
-    return this.write((store) =>
-      store.finalSelection(meetingId, userId, candidateId)
-    );
+  async finalSelection(meetingId: string, userId: string, candidateId: string) {
+    return this.withMeetingLock(meetingId, async (client) => {
+      const meetingResult = await client.query<{
+        status: MeetingStatus;
+        hostUserId: string;
+        name: string;
+        capacity: number;
+        meetingAt: Date | string;
+        purpose: Purpose;
+        mood: Mood;
+        joinCode: string;
+        seriesId: string | null;
+        recurrenceType: RecurrenceType | null;
+        recurrenceNextAt: Date | string | null;
+        nextMeetingId: string | null;
+      }>(
+        `
+          select
+            status, host_user_id as "hostUserId", name, capacity,
+            meeting_at as "meetingAt", purpose, mood, join_code as "joinCode",
+            series_id as "seriesId", recurrence_type as "recurrenceType",
+            recurrence_next_at as "recurrenceNextAt", next_meeting_id as "nextMeetingId"
+          from meetings
+          where id = $1 and status <> 'DELETED'
+          for update
+        `,
+        [meetingId]
+      );
+      const meeting = meetingResult.rows[0];
+      if (!meeting) {
+        throw new StoreError(404, "MEETING_NOT_FOUND", "모임을 찾을 수 없습니다.");
+      }
+      if (meeting.hostUserId !== userId) {
+        throw new StoreError(403, "HOST_ONLY", "모임장만 실행할 수 있습니다.");
+      }
+      if (meeting.status !== "FINAL_SELECTION") {
+        throw new StoreError(
+          409,
+          "FINAL_SELECTION_NOT_REQUIRED",
+          "최종 선택이 필요한 상태가 아닙니다."
+        );
+      }
+
+      const results = await this.computeVoteResults(client, meetingId, userId);
+      if (!results.tiedFirstCandidateIds.includes(candidateId)) {
+        throw new StoreError(422, "INVALID_FINAL_CANDIDATE", "공동 1위 후보 중에서 선택해야 합니다.");
+      }
+
+      await client.query(
+        `
+          update meetings
+          set status = 'COMPLETED', final_candidate_id = $2, updated_at = now()
+          where id = $1
+        `,
+        [meetingId, candidateId]
+      );
+      await client.query(`update votes set status = 'CLOSED' where meeting_id = $1`, [
+        meetingId
+      ]);
+
+      await this.createNextRecurringOccurrence(client, {
+        id: meetingId,
+        name: meeting.name,
+        hostUserId: meeting.hostUserId,
+        capacity: meeting.capacity,
+        meetingAt: timestamp(meeting.meetingAt),
+        purpose: meeting.purpose,
+        mood: meeting.mood,
+        joinCode: meeting.joinCode,
+        seriesId: meeting.seriesId,
+        recurrenceType: meeting.recurrenceType,
+        recurrenceNextAt: nullableTimestamp(meeting.recurrenceNextAt),
+        nextMeetingId: meeting.nextMeetingId
+      });
+
+      return this.computeVoteResults(client, meetingId, userId);
+    });
   }
 }

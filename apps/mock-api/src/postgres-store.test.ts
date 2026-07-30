@@ -597,6 +597,238 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
     );
   });
 
+  it("resolves a tied vote via finalSelection and starts the next recurring occurrence", async () => {
+    const host = await store.signup("host-final", "호스트", "pw1234");
+    const guest = await store.signup("guest-final", "게스트", "pw1234");
+    const meeting = await store.createMeeting(host.user.id, {
+      name: "최종선택 테스트",
+      capacity: 2,
+      meetingAt: "2026-08-01T10:00:00+09:00",
+      purpose: "DRINK",
+      mood: "TIPSY"
+    });
+    await store.joinMeeting(guest.user.id, meeting.id, meeting.joinCode!, "게스트닉");
+
+    const [placeA] = await store.upsertPlaces([
+      {
+        id: "place-final-a",
+        naverPlaceId: "naver-final-a",
+        name: "가호프",
+        category: "호프",
+        address: "서울",
+        roadAddress: "서울",
+        latitude: 37.5,
+        longitude: 127.0,
+        station: "강남",
+        distanceText: "1분"
+      }
+    ]);
+    const [placeB] = await store.upsertPlaces([
+      {
+        id: "place-final-b",
+        naverPlaceId: "naver-final-b",
+        name: "나호프",
+        category: "호프",
+        address: "서울",
+        roadAddress: "서울",
+        latitude: 37.6,
+        longitude: 127.1,
+        station: "역삼",
+        distanceText: "2분"
+      }
+    ]);
+    const hostPlace = await store.registerUserPlace(host.user.id, placeA!.naverPlaceId, "DRINK", "TIPSY");
+    const guestPlace = await store.registerUserPlace(guest.user.id, placeB!.naverPlaceId, "DRINK", "TIPSY");
+    await store.replaceMyCandidates(meeting.id, host.user.id, [hostPlace.id]);
+    await store.replaceMyCandidates(meeting.id, guest.user.id, [guestPlace.id]);
+    await store.createVote(meeting.id, host.user.id);
+
+    const hostSession = await store.voteSession(meeting.id, host.user.id);
+    const hostChoiceId = hostSession.round!.candidateA.id;
+    await store.saveChoice(meeting.id, host.user.id, 1, hostChoiceId);
+    const guestSession = await store.voteSession(meeting.id, guest.user.id);
+    const guestChoiceId =
+      guestSession.round!.candidateA.id === hostChoiceId
+        ? guestSession.round!.candidateB.id
+        : guestSession.round!.candidateA.id;
+    await store.saveChoice(meeting.id, guest.user.id, 1, guestChoiceId);
+
+    const closed = await store.closeVote(meeting.id, host.user.id, false);
+    assert.equal(closed.meetingStatus, "FINAL_SELECTION");
+    assert.equal(closed.tiedFirstCandidateIds.length, 2);
+
+    await assert.rejects(
+      () => store.finalSelection(meeting.id, host.user.id, "not-a-real-candidate-id"),
+      (error: unknown) => (error as { code?: string }).code === "INVALID_FINAL_CANDIDATE"
+    );
+
+    const finalPick = closed.tiedFirstCandidateIds[0]!;
+    const final = await store.finalSelection(meeting.id, host.user.id, finalPick);
+    assert.equal(final.meetingStatus, "COMPLETED");
+    assert.equal(final.finalCandidateId, finalPick);
+  });
+
+  it("creates the next recurring occurrence when finalSelection resolves a repeated meeting's tie", async () => {
+    const host = await store.signup("host-final-recur", "호스트", "pw1234");
+
+    // --- Meeting A: run to COMPLETED so it can be repeated. ---
+    const meetingA = await store.createMeeting(host.user.id, {
+      name: "최종선택 반복 테스트 1회차",
+      capacity: 2,
+      meetingAt: "2026-08-01T10:00:00+09:00",
+      purpose: "CAFE",
+      mood: "QUIET"
+    });
+
+    const [placeA1] = await store.upsertPlaces([
+      {
+        id: "place-final-recur-a1",
+        naverPlaceId: "naver-final-recur-a1",
+        name: "가카페",
+        category: "카페",
+        address: "서울",
+        roadAddress: "서울",
+        latitude: 37.5,
+        longitude: 127.0,
+        station: "강남",
+        distanceText: "1분"
+      }
+    ]);
+    const [placeA2] = await store.upsertPlaces([
+      {
+        id: "place-final-recur-a2",
+        naverPlaceId: "naver-final-recur-a2",
+        name: "나카페",
+        category: "카페",
+        address: "서울",
+        roadAddress: "서울",
+        latitude: 37.6,
+        longitude: 127.1,
+        station: "역삼",
+        distanceText: "2분"
+      }
+    ]);
+    const hostPlaceA1 = await store.registerUserPlace(host.user.id, placeA1!.naverPlaceId, "CAFE", "QUIET");
+    const hostPlaceA2 = await store.registerUserPlace(host.user.id, placeA2!.naverPlaceId, "CAFE", "QUIET");
+    await store.replaceMyCandidates(meetingA.id, host.user.id, [hostPlaceA1.id, hostPlaceA2.id]);
+    await store.createVote(meetingA.id, host.user.id);
+
+    const sessionA = await store.voteSession(meetingA.id, host.user.id);
+    await store.saveChoice(meetingA.id, host.user.id, 1, sessionA.round!.candidateA.id);
+    const resultsA = await store.closeVote(meetingA.id, host.user.id, false);
+    assert.equal(resultsA.meetingStatus, "COMPLETED");
+
+    // --- Repeat meeting A into meeting B with WEEKLY recurrence. ---
+    // repeatMeeting still runs on the legacy snapshot write() path (not part
+    // of this task's conversion scope); it's only used here as test setup to
+    // reach a meeting with recurrenceType set, since that field can't be set
+    // via plain createMeeting.
+    const detailA = await store.detail(meetingA.id, host.user.id);
+    const hostMemberA = detailA.members.find((member) => member.role === "HOST")!;
+    const meetingB = await store.repeatMeeting(meetingA.id, host.user.id, {
+      name: "최종선택 반복 테스트 2회차",
+      capacity: 2,
+      meetingAt: "2026-08-08T10:00:00+09:00",
+      purpose: "CAFE",
+      mood: "QUIET",
+      memberIds: [hostMemberA.id],
+      recurrence: { type: "WEEKLY" }
+    });
+    assert.equal(meetingB.status, "RECRUITING");
+    assert.equal(meetingB.parentMeetingId, meetingA.id);
+    assert.equal(meetingB.recurrence?.type, "WEEKLY");
+    const seriesId = meetingB.seriesId ?? meetingA.id;
+    assert.equal(seriesId, meetingA.id);
+
+    // --- Join a guest and run meeting B through candidates/vote into a tie,
+    // so closeVote lands it in FINAL_SELECTION instead of picking a winner. ---
+    const guest = await store.signup("guest-final-recur", "게스트", "pw1234");
+    await store.joinMeeting(guest.user.id, meetingB.id, meetingB.joinCode!, "게스트닉");
+
+    const [placeB1] = await store.upsertPlaces([
+      {
+        id: "place-final-recur-b1",
+        naverPlaceId: "naver-final-recur-b1",
+        name: "다카페",
+        category: "카페",
+        address: "서울",
+        roadAddress: "서울",
+        latitude: 37.7,
+        longitude: 127.2,
+        station: "홍대",
+        distanceText: "3분"
+      }
+    ]);
+    const [placeB2] = await store.upsertPlaces([
+      {
+        id: "place-final-recur-b2",
+        naverPlaceId: "naver-final-recur-b2",
+        name: "라카페",
+        category: "카페",
+        address: "서울",
+        roadAddress: "서울",
+        latitude: 37.8,
+        longitude: 127.3,
+        station: "합정",
+        distanceText: "4분"
+      }
+    ]);
+    const hostPlaceB = await store.registerUserPlace(host.user.id, placeB1!.naverPlaceId, "CAFE", "QUIET");
+    const guestPlaceB = await store.registerUserPlace(guest.user.id, placeB2!.naverPlaceId, "CAFE", "QUIET");
+    await store.replaceMyCandidates(meetingB.id, host.user.id, [hostPlaceB.id]);
+    await store.replaceMyCandidates(meetingB.id, guest.user.id, [guestPlaceB.id]);
+    await store.createVote(meetingB.id, host.user.id);
+
+    const hostSessionB = await store.voteSession(meetingB.id, host.user.id);
+    const hostChoiceIdB = hostSessionB.round!.candidateA.id;
+    await store.saveChoice(meetingB.id, host.user.id, 1, hostChoiceIdB);
+    const guestSessionB = await store.voteSession(meetingB.id, guest.user.id);
+    const guestChoiceIdB =
+      guestSessionB.round!.candidateA.id === hostChoiceIdB
+        ? guestSessionB.round!.candidateB.id
+        : guestSessionB.round!.candidateA.id;
+    await store.saveChoice(meetingB.id, guest.user.id, 1, guestChoiceIdB);
+
+    const closedB = await store.closeVote(meetingB.id, host.user.id, false);
+    assert.equal(closedB.meetingStatus, "FINAL_SELECTION");
+    assert.equal(closedB.tiedFirstCandidateIds.length, 2);
+
+    // --- Resolve the tie via finalSelection: this exercises finalSelection's
+    // OWN call into createNextRecurringOccurrence, a different code path from
+    // closeVote's single-winner branch tested above. ---
+    const finalPickB = closedB.tiedFirstCandidateIds[0]!;
+    const finalB = await store.finalSelection(meetingB.id, host.user.id, finalPickB);
+    assert.equal(finalB.meetingStatus, "COMPLETED");
+    assert.equal(finalB.finalCandidateId, finalPickB);
+
+    // --- Assert createNextRecurringOccurrence fired: a meeting C exists as a
+    // child of B, RECRUITING, carrying the WEEKLY recurrence and series id
+    // forward. ---
+    const home = await store.home(host.user.id);
+    const allMeetings = [...home.ongoingMeetings, ...home.completedMeetings];
+    const meetingC = allMeetings.find((item) => item.parentMeetingId === meetingB.id);
+    assert.ok(meetingC, "expected a next occurrence meeting to exist");
+    assert.equal(meetingC!.status, "RECRUITING");
+    assert.equal(meetingC!.seriesId, seriesId);
+    assert.equal(meetingC!.recurrence?.type, "WEEKLY");
+
+    // Meeting B itself should no longer be eligible to repeat again (its
+    // nextMeetingId is now set), confirmed via repeatMeeting rejecting.
+    await assert.rejects(
+      () =>
+        store.repeatMeeting(meetingB.id, host.user.id, {
+          name: "최종선택 반복 테스트 3회차",
+          capacity: 2,
+          meetingAt: "2026-08-15T10:00:00+09:00",
+          purpose: "CAFE",
+          mood: "QUIET",
+          memberIds: [hostMemberA.id],
+          recurrence: { type: "WEEKLY" }
+        }),
+      (error: unknown) => (error as { code?: string }).code === "NEXT_MEETING_ALREADY_EXISTS"
+    );
+  });
+
   it("looks up a meeting by join code without loading the whole database", async () => {
     const host = await store.signup("host-lookup", "호스트", "pw1234");
     const meeting = await store.createMeeting(host.user.id, {

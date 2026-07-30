@@ -2883,18 +2883,42 @@ In `docs/database.md`, under section `## 1. 구성`, add a new bullet after the 
 
 - [ ] **Step 3: Add test-database setup instructions to `docs/local-development.md`**
 
-Read `docs/local-development.md` first to find the right insertion point (likely near the existing Supabase connection instructions), then add a new subsection:
+Read `docs/local-development.md` first to find the right insertion point (likely near the existing Supabase connection instructions), then add a new subsection. **Note:** the original plan assumed a second Supabase project, but the account's org hit Supabase's free-tier 2-project limit during Task 0, so this repo's actual `TEST_DATABASE_URL` points at a local Homebrew PostgreSQL 16 instance instead — document both options, with local Postgres as the primary path since that's what's actually configured:
 
 ```markdown
-## Postgres 통합 테스트용 별도 프로젝트
+## Postgres 통합 테스트용 데이터베이스
 
-`apps/mock-api/src/postgres-store.test.ts`는 실제 Postgres에 대해 도는 통합 테스트다. Render/프로덕션이 쓰는 `DATABASE_URL`과는 별개로, 테스트 전용 Supabase 프로젝트를 하나 더 만들어 `TEST_DATABASE_URL`로 등록한다.
+`apps/mock-api/src/postgres-store.test.ts`는 실제 Postgres에 대해 도는 통합 테스트다. Render/프로덕션이 쓰는 `DATABASE_URL`과는 별개로, 테스트 전용 DB를 `TEST_DATABASE_URL`로 등록한다.
+
+**로컬 Postgres 사용 (권장, 계정 제한 없음):**
+
+```powershell
+brew install postgresql@16
+brew services start postgresql@16
+createdb damo_test
+psql -d damo_test -c "create role anon; create role authenticated;"
+```
+
+`apps/mock-api/.env.local`:
+```env
+TEST_DATABASE_URL=postgresql://<로컬 사용자명>@localhost:5432/damo_test
+```
+
+`anon`/`authenticated` 역할은 `0001_initial.sql`의 `revoke ... from anon, authenticated` 구문이 Supabase 전용 역할을 가정하기 때문에 로컬에서는 빈 역할로 미리 만들어둬야 한다.
+
+**별도 Supabase 프로젝트를 쓸 수 있다면:**
 
 ```env
 TEST_DATABASE_URL=postgresql://postgres.<test-project-ref>:비밀번호@REGION.pooler.supabase.com:5432/postgres
 ```
 
-이 값이 없으면 `pnpm test:api`는 해당 스위트를 자동으로 건너뛴다.
+어느 쪽이든, 값을 설정한 뒤 마이그레이션을 적용한다:
+
+```powershell
+DATABASE_URL="$TEST_DATABASE_URL" pnpm --filter @damo/mock-api db:migrate
+```
+
+`TEST_DATABASE_URL`이 없으면 `pnpm test:api`는 해당 스위트를 자동으로 건너뛴다. 이 값이 Render/프로덕션이 쓰는 `DATABASE_URL`과 절대 같은 값이면 안 된다 — 테스트가 `store.reset()`으로 데이터를 계속 지운다.
 ```
 
 - [ ] **Step 4: Commit**

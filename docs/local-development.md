@@ -105,6 +105,7 @@ pnpm build
 ```bash
 brew install postgresql@16
 brew services start postgresql@16
+export PATH="/opt/homebrew/opt/postgresql@16/bin:$PATH"  # postgresql@16 is keg-only, not linked onto PATH by default
 createdb damo_test
 psql -d damo_test -c "create role anon; create role authenticated;"
 ```

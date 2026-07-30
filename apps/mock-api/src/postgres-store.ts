@@ -1529,15 +1529,79 @@ export class PostgresStore {
     mood: Mood,
     applyToMeetingIds: string[]
   ) {
-    return this.write((store) =>
-      store.updateUserPlace(
-        userId,
-        userPlaceId,
-        purpose,
-        mood,
-        applyToMeetingIds
-      )
-    );
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      const sortedMeetingIds = [...new Set(applyToMeetingIds)].sort();
+      for (const meetingId of sortedMeetingIds) {
+        await client.query("select pg_advisory_xact_lock(hashtext($1))", [`meeting:${meetingId}`]);
+      }
+
+      const placeResult = await client.query<{ userPlaceId: string; placeId: string }>(
+        `
+          update user_places
+          set purpose = $3, mood = $4, updated_at = now()
+          where id = $1 and user_id = $2 and is_active = true
+          returning id as "userPlaceId", place_id as "placeId"
+        `,
+        [userPlaceId, userId, purpose, mood]
+      );
+      const place = placeResult.rows[0];
+      if (!place) {
+        throw new StoreError(404, "USER_PLACE_NOT_FOUND", "저장된 장소를 찾을 수 없습니다.");
+      }
+
+      for (const meetingId of sortedMeetingIds) {
+        const meetingResult = await client.query<{ status: MeetingStatus }>(
+          `select status from meetings where id = $1 and status <> 'DELETED'`,
+          [meetingId]
+        );
+        const meeting = meetingResult.rows[0];
+        if (!meeting) {
+          throw new StoreError(404, "MEETING_NOT_FOUND", "모임을 찾을 수 없습니다.");
+        }
+        if (meeting.status !== "RECRUITING") continue;
+
+        await client.query(
+          `
+            update candidate_recommendations recommendation
+            set purpose = $4, mood = $5
+            from meeting_candidates candidate, meeting_members member
+            where recommendation.candidate_id = candidate.id
+              and recommendation.member_id = member.id
+              and candidate.meeting_id = $1
+              and candidate.place_id = $2
+              and member.meeting_id = $1
+              and member.user_id = $3
+              and member.status = 'ACTIVE'
+          `,
+          [meetingId, place.placeId, userId, purpose, mood]
+        );
+        await client.query(
+          `
+            delete from meeting_candidates candidate
+            where candidate.meeting_id = $1
+              and not exists (
+                select 1 from candidate_recommendations r where r.candidate_id = candidate.id
+              )
+          `,
+          [meetingId]
+        );
+        await client.query(`update meetings set updated_at = now() where id = $1`, [meetingId]);
+      }
+
+      await client.query("commit");
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
+    const item = (await this.queryUserPlaces(userId, userPlaceId))[0];
+    if (!item) {
+      throw new StoreError(500, "USER_PLACE_SAVE_FAILED", "내 장소 저장 결과를 찾을 수 없습니다.");
+    }
+    return item;
   }
 
   async unregisterUserPlace(

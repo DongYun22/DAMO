@@ -1147,4 +1147,176 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
       `expected the retry loop to consume at least 3 Math.random calls, got ${callCount}`
     );
   });
+
+  it("updates a user place and reflects the change onto an active RECRUITING candidate", async () => {
+    const host = await store.signup("host-update-place", "호스트", "pw1234");
+    const meeting = await store.createMeeting(host.user.id, {
+      name: "장소수정 테스트",
+      capacity: 2,
+      meetingAt: "2026-08-01T10:00:00+09:00",
+      purpose: "CAFE",
+      mood: "QUIET"
+    });
+    const [place] = await store.upsertPlaces([
+      {
+        id: "place-update-a",
+        naverPlaceId: "naver-update-a",
+        name: "가카페",
+        category: "카페",
+        address: "서울",
+        roadAddress: "서울",
+        latitude: 37.5,
+        longitude: 127.0,
+        station: "강남",
+        distanceText: "1분"
+      }
+    ]);
+    const hostPlace = await store.registerUserPlace(host.user.id, place!.naverPlaceId, "CAFE", "QUIET");
+    await store.replaceMyCandidates(meeting.id, host.user.id, [hostPlace.id]);
+
+    const updated = await store.updateUserPlace(
+      host.user.id,
+      hostPlace.id,
+      "MEAL",
+      "FUN",
+      [meeting.id]
+    );
+    assert.equal(updated.purpose, "MEAL");
+    assert.equal(updated.mood, "FUN");
+
+    const candidates = await store.publicCandidates(meeting.id, host.user.id);
+    assert.equal(candidates.length, 1);
+  });
+
+  it("updates a user place across multiple meetings in one call, skipping a meeting that is no longer RECRUITING", async () => {
+    const host = await store.signup("host-update-multi", "호스트", "pw1234");
+    const meetingA = await store.createMeeting(host.user.id, {
+      name: "장소수정 다중 테스트 A",
+      capacity: 2,
+      meetingAt: "2026-08-01T10:00:00+09:00",
+      purpose: "CAFE",
+      mood: "QUIET"
+    });
+    const meetingB = await store.createMeeting(host.user.id, {
+      name: "장소수정 다중 테스트 B",
+      capacity: 2,
+      meetingAt: "2026-08-02T10:00:00+09:00",
+      purpose: "CAFE",
+      mood: "QUIET"
+    });
+    // meetingC will be moved out of RECRUITING (into VOTING) before the
+    // updateUserPlace call below, so the loop's `continue` branch for a
+    // non-RECRUITING meeting is actually exercised, not just meetings that
+    // stay RECRUITING throughout.
+    const meetingC = await store.createMeeting(host.user.id, {
+      name: "장소수정 다중 테스트 C",
+      capacity: 2,
+      meetingAt: "2026-08-03T10:00:00+09:00",
+      purpose: "CAFE",
+      mood: "QUIET"
+    });
+
+    const [placeA] = await store.upsertPlaces([
+      {
+        id: "place-update-multi-a",
+        naverPlaceId: "naver-update-multi-a",
+        name: "가카페",
+        category: "카페",
+        address: "서울",
+        roadAddress: "서울",
+        latitude: 37.5,
+        longitude: 127.0,
+        station: "강남",
+        distanceText: "1분"
+      }
+    ]);
+    const [placeB] = await store.upsertPlaces([
+      {
+        id: "place-update-multi-b",
+        naverPlaceId: "naver-update-multi-b",
+        name: "나카페",
+        category: "카페",
+        address: "서울",
+        roadAddress: "서울",
+        latitude: 37.6,
+        longitude: 127.1,
+        station: "역삼",
+        distanceText: "2분"
+      }
+    ]);
+
+    const hostPlace = await store.registerUserPlace(host.user.id, placeA!.naverPlaceId, "CAFE", "QUIET");
+    const hostPlace2 = await store.registerUserPlace(host.user.id, placeB!.naverPlaceId, "CAFE", "QUIET");
+
+    // hostPlace is the candidate in every meeting; meetingC additionally
+    // gets hostPlace2 so it has the 2 distinct candidates createVote requires.
+    await store.replaceMyCandidates(meetingA.id, host.user.id, [hostPlace.id]);
+    await store.replaceMyCandidates(meetingB.id, host.user.id, [hostPlace.id]);
+    await store.replaceMyCandidates(meetingC.id, host.user.id, [hostPlace.id, hostPlace2.id]);
+
+    await store.createVote(meetingC.id, host.user.id);
+    const meetingCBeforeUpdate = await store.detail(meetingC.id, host.user.id);
+    assert.equal(meetingCBeforeUpdate.status, "VOTING");
+
+    // Pass the meeting ids in a deliberately non-sorted order to prove the
+    // method's own `[...new Set(ids)].sort()` step (not caller-supplied
+    // order) is what determines lock-acquisition order, and that the loop
+    // still processes every meeting regardless of the order they're passed.
+    const updated = await store.updateUserPlace(
+      host.user.id,
+      hostPlace.id,
+      "MEAL",
+      "FUN",
+      [meetingC.id, meetingB.id, meetingA.id]
+    );
+    assert.equal(updated.purpose, "MEAL");
+    assert.equal(updated.mood, "FUN");
+
+    const candidatesA = await store.publicCandidates(meetingA.id, host.user.id);
+    assert.equal(candidatesA.length, 1);
+    const candidatesB = await store.publicCandidates(meetingB.id, host.user.id);
+    assert.equal(candidatesB.length, 1);
+
+    // meetingC was VOTING (not RECRUITING) at call time, so the loop should
+    // have taken the `continue` branch for it without throwing — its
+    // candidates and status are untouched, and the two RECRUITING meetings
+    // were still updated in the same call.
+    const candidatesC = await store.publicCandidates(meetingC.id, host.user.id);
+    assert.equal(candidatesC.length, 2);
+    const meetingCAfterUpdate = await store.detail(meetingC.id, host.user.id);
+    assert.equal(meetingCAfterUpdate.status, "VOTING");
+  });
+
+  it("updates a user place with an empty applyToMeetingIds, touching no meeting locks", async () => {
+    // The server's route defaults applyToMeetingIds to [] (server.ts), so
+    // this is the common "edit my saved place without applying it anywhere"
+    // path, not just an edge case. With no meeting ids, the sorted-id array
+    // is empty, so the per-meeting advisory-lock loop and the per-meeting
+    // update loop both iterate zero times — only the user_places row itself
+    // should change.
+    const host = await store.signup("host-update-empty", "호스트", "pw1234");
+    const [place] = await store.upsertPlaces([
+      {
+        id: "place-update-empty-a",
+        naverPlaceId: "naver-update-empty-a",
+        name: "다카페",
+        category: "카페",
+        address: "서울",
+        roadAddress: "서울",
+        latitude: 37.4,
+        longitude: 126.9,
+        station: "홍대",
+        distanceText: "1분"
+      }
+    ]);
+    const hostPlace = await store.registerUserPlace(host.user.id, place!.naverPlaceId, "CAFE", "QUIET");
+
+    const updated = await store.updateUserPlace(host.user.id, hostPlace.id, "MEAL", "FUN", []);
+    assert.equal(updated.purpose, "MEAL");
+    assert.equal(updated.mood, "FUN");
+
+    const [listed] = await store.listUserPlaces(host.user.id);
+    assert.equal(listed!.purpose, "MEAL");
+    assert.equal(listed!.mood, "FUN");
+  });
 });

@@ -324,6 +324,37 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
     );
   });
 
+  it("joins a meeting, rejects wrong codes, and enforces capacity", async () => {
+    const host = await store.signup("host-join", "호스트", "pw1234");
+    const guest = await store.signup("guest-join", "게스트", "pw1234");
+    const bystander = await store.signup("bystander-join", "구경꾼", "pw1234");
+    const meeting = await store.createMeeting(host.user.id, {
+      name: "가입 테스트",
+      capacity: 2,
+      meetingAt: "2026-08-01T10:00:00+09:00",
+      purpose: "STUDY",
+      mood: "BUSINESS"
+    });
+
+    await assert.rejects(
+      () => store.joinMeeting(guest.user.id, meeting.id, "0000", "게스트닉"),
+      (error: unknown) => (error as { code?: string }).code === "INVALID_JOIN_CODE"
+    );
+
+    const joined = await store.joinMeeting(
+      guest.user.id,
+      meeting.id,
+      meeting.joinCode!,
+      "게스트닉"
+    );
+    assert.equal(joined.members.length, 2);
+
+    await assert.rejects(
+      () => store.joinMeeting(bystander.user.id, meeting.id, meeting.joinCode!, "구경꾼닉"),
+      (error: unknown) => (error as { code?: string }).code === "MEETING_CAPACITY_EXCEEDED"
+    );
+  });
+
   it("creates a meeting with a unique join code and a host member", async () => {
     const host = await store.signup("host-create", "호스트", "pw1234");
     const meeting = await store.createMeeting(host.user.id, {

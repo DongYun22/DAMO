@@ -1722,9 +1722,69 @@ export class PostgresStore {
     joinCode: string,
     meetingNickname: string
   ) {
-    return this.write((store) =>
-      store.joinMeeting(userId, meetingId, joinCode, meetingNickname)
-    );
+    await this.withMeetingLock(meetingId, async (client) => {
+      const meetingResult = await client.query<{
+        joinCode: string;
+        status: MeetingStatus;
+        capacity: number;
+      }>(
+        `
+          select join_code as "joinCode", status, capacity
+          from meetings
+          where id = $1 and status <> 'DELETED'
+        `,
+        [meetingId]
+      );
+      const meeting = meetingResult.rows[0];
+      if (!meeting) {
+        throw new StoreError(404, "MEETING_NOT_FOUND", "모임을 찾을 수 없습니다.");
+      }
+      if (meeting.joinCode !== joinCode) {
+        throw new StoreError(422, "INVALID_JOIN_CODE", "가입 코드가 올바르지 않습니다.");
+      }
+      if (meeting.status !== "RECRUITING") {
+        throw new StoreError(409, "MEETING_NOT_RECRUITING", "이미 투표가 시작된 모임입니다.");
+      }
+
+      const existingResult = await client.query<{ id: string }>(
+        `select id from meeting_members where meeting_id = $1 and user_id = $2`,
+        [meetingId, userId]
+      );
+      const existing = existingResult.rows[0];
+
+      if (!existing) {
+        const countResult = await client.query<{ count: number }>(
+          `
+            select count(*)::int as count
+            from meeting_members
+            where meeting_id = $1 and status = 'ACTIVE'
+          `,
+          [meetingId]
+        );
+        if ((countResult.rows[0]?.count ?? 0) >= meeting.capacity) {
+          throw new StoreError(409, "MEETING_CAPACITY_EXCEEDED", "모임 정원이 모두 찼습니다.");
+        }
+        await client.query(
+          `
+            insert into meeting_members (id, meeting_id, user_id, meeting_nickname, role, status)
+            values ($1, $2, $3, $4, 'MEMBER', 'ACTIVE')
+          `,
+          [randomUUID(), meetingId, userId, meetingNickname]
+        );
+      } else {
+        await client.query(
+          `
+            update meeting_members
+            set status = 'ACTIVE', meeting_nickname = $2, joined_at = now()
+            where id = $1
+          `,
+          [existing.id, meetingNickname]
+        );
+      }
+
+      await client.query("update meetings set updated_at = now() where id = $1", [meetingId]);
+    });
+    return this.detail(meetingId, userId);
   }
 
   async detail(meetingId: string, userId: string) {

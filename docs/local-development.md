@@ -96,7 +96,41 @@ pnpm build
 - `test:api`: 홈 조회, 모임 생성, N-1회 투표와 알림 해제를 포함한 API 테스트
 - `build`: 배포용 프론트엔드와 서버 코드 빌드
 
-## 7. 현재 프로토타입의 범위
+## 7. Postgres 통합 테스트용 데이터베이스
+
+`apps/mock-api/src/postgres-store.test.ts`는 실제 Postgres에 대해 도는 통합 테스트다. Render/프로덕션이 쓰는 `DATABASE_URL`과는 별개로, 테스트 전용 DB를 `TEST_DATABASE_URL`로 등록한다.
+
+**로컬 Postgres 사용 (권장, 계정 제한 없음):**
+
+```bash
+brew install postgresql@16
+brew services start postgresql@16
+createdb damo_test
+psql -d damo_test -c "create role anon; create role authenticated;"
+```
+
+`apps/mock-api/.env.local`:
+```env
+TEST_DATABASE_URL=postgresql://<로컬 사용자명>@localhost:5432/damo_test
+```
+
+`anon`/`authenticated` 역할은 `0001_initial.sql`의 `revoke ... from anon, authenticated` 구문이 Supabase 전용 역할을 가정하기 때문에 로컬에서는 빈 역할로 미리 만들어둬야 한다.
+
+**별도 Supabase 프로젝트를 쓸 수 있다면:**
+
+```env
+TEST_DATABASE_URL=postgresql://postgres.<test-project-ref>:비밀번호@REGION.pooler.supabase.com:5432/postgres
+```
+
+어느 쪽이든, 값을 설정한 뒤 마이그레이션을 적용한다:
+
+```bash
+DATABASE_URL="$TEST_DATABASE_URL" pnpm --filter @damo/mock-api db:migrate
+```
+
+`TEST_DATABASE_URL`이 없으면 `pnpm test:api`는 해당 스위트를 자동으로 건너뛴다. 이 값이 Render/프로덕션이 쓰는 `DATABASE_URL`과 절대 같은 값이면 안 된다 — 테스트가 `store.reset()`으로 데이터를 계속 지운다.
+
+## 8. 현재 프로토타입의 범위
 
 - 로그인 정보, 모임, 내 장소와 투표 결과는 Supabase PostgreSQL에 영구 저장됩니다.
 - 테스트 계정 비밀번호는 bcrypt로 해시해 저장합니다.
@@ -105,7 +139,7 @@ pnpm build
 - 결과 화면은 현재 5초 간격 조회 방식입니다. 사용량이 늘면 WebSocket 또는 Server-Sent Events로 교체할 수 있습니다.
 - API 계약의 기준 문서는 `docs/openapi.yaml`이며, 화면·규칙의 기준은 `docs/flow.md`와 `docs/data-model.md`입니다.
 
-## 8. Render 통합 테스트 배포
+## 9. Render 통합 테스트 배포
 
 루트의 `render.yaml`은 Vite 웹 빌드와 Express 목 API를 하나의 Render Web Service로 배포합니다. 배포 환경에서는 웹과 API가 동일한 도메인을 사용하므로 별도의 CORS 주소 설정이 필요하지 않습니다.
 

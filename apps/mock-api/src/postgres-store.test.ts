@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { after, before, beforeEach, describe, it } from "node:test";
+import { after, before, beforeEach, describe, it, mock } from "node:test";
 import { PostgresStore } from "./postgres-store.js";
 
 const testDatabaseUrl = process.env.TEST_DATABASE_URL;
@@ -313,5 +313,59 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
     assert.equal(meeting.members.length, 1);
     assert.equal(meeting.members[0]!.role, "HOST");
     assert.equal(meeting.status, "RECRUITING");
+  });
+
+  it("retries the join code when the first candidate collides", async () => {
+    const host = await store.signup("host-collision", "호스트", "pw1234");
+
+    // Pin Math.random so the *first* join-code attempt of each of the two
+    // createMeeting calls below computes the identical 4-digit candidate,
+    // forcing a real 23505 unique-violation collision on the second call's
+    // first insert attempt. After the first two calls, fall back to the
+    // real Math.random so the retry (attempt #2 of the second call) can
+    // find a fresh, non-colliding code.
+    const realRandom = Math.random.bind(Math);
+    let callCount = 0;
+    const randomMock = mock.method(Math, "random", () => {
+      callCount += 1;
+      return callCount <= 2 ? 0.5 : realRandom();
+    });
+
+    let first: Awaited<ReturnType<typeof store.createMeeting>>;
+    let second: Awaited<ReturnType<typeof store.createMeeting>>;
+    try {
+      first = await store.createMeeting(host.user.id, {
+        name: "충돌 테스트 1",
+        capacity: 2,
+        meetingAt: "2026-08-01T10:00:00+09:00",
+        purpose: "CAFE",
+        mood: "FUN"
+      });
+      second = await store.createMeeting(host.user.id, {
+        name: "충돌 테스트 2",
+        capacity: 2,
+        meetingAt: "2026-08-01T10:00:00+09:00",
+        purpose: "CAFE",
+        mood: "FUN"
+      });
+    } finally {
+      randomMock.mock.restore();
+    }
+
+    // Both calls pinned Math.random to 0.5 for their first attempt, so
+    // without the savepoint fix the second call's first insert would hit
+    // 23505 and (pre-fix) abort the transaction, making every subsequent
+    // statement in that transaction fail with 25P02. Proving the second
+    // call still succeeded, with a join code different from the first,
+    // demonstrates the retry loop actually recovered from a real collision.
+    assert.equal(first.joinCode, "5500");
+    assert.match(second.joinCode!, /^\d{4}$/);
+    assert.notEqual(second.joinCode, first.joinCode);
+    // At least 3 Math.random calls means: call 1's single attempt, call 2's
+    // colliding first attempt, and call 2's successful retry attempt.
+    assert.ok(
+      callCount >= 3,
+      `expected the retry loop to consume at least 3 Math.random calls, got ${callCount}`
+    );
   });
 });

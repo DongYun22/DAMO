@@ -1600,6 +1600,7 @@ export class PostgresStore {
       for (let attempt = 0; attempt < 50 && !inserted; attempt += 1) {
         const candidateId = randomUUID();
         const joinCode = this.randomJoinCodeCandidate();
+        await client.query("savepoint join_code_attempt");
         try {
           await client.query(
             `
@@ -1629,6 +1630,7 @@ export class PostgresStore {
             "code" in error &&
             error.code === "23505"
           ) {
+            await client.query("rollback to savepoint join_code_attempt");
             continue;
           }
           throw error;

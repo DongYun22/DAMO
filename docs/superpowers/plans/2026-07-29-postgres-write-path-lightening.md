@@ -1028,6 +1028,14 @@ with:
       for (let attempt = 0; attempt < 50 && !inserted; attempt += 1) {
         const candidateId = randomUUID();
         const joinCode = this.randomJoinCodeCandidate();
+        // Postgres aborts the *entire* transaction on any statement error
+        // (unique violations included) and refuses further statements until
+        // a ROLLBACK or ROLLBACK TO SAVEPOINT. Wrap each attempt in its own
+        // savepoint so a join-code collision only unwinds that attempt,
+        // not the whole transaction — otherwise the *next* statement fails
+        // with opaque `25P02` ("current transaction is aborted") instead of
+        // retrying.
+        await client.query("savepoint join_code_attempt");
         try {
           await client.query(
             `
@@ -1057,6 +1065,7 @@ with:
             "code" in error &&
             error.code === "23505"
           ) {
+            await client.query("rollback to savepoint join_code_attempt");
             continue;
           }
           throw error;

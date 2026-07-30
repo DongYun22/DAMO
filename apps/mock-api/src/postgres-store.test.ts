@@ -321,6 +321,211 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
     assert.equal(results.results.every((item) => item.isJointRank), true);
   });
 
+  it("closes a vote with a single winner and rejects incomplete closes without force", async () => {
+    const host = await store.signup("host-close", "호스트", "pw1234");
+    const guest = await store.signup("guest-close", "게스트", "pw1234");
+    const meeting = await store.createMeeting(host.user.id, {
+      name: "종료 테스트",
+      capacity: 2,
+      meetingAt: "2026-08-01T10:00:00+09:00",
+      purpose: "CAFE",
+      mood: "QUIET"
+    });
+    await store.joinMeeting(guest.user.id, meeting.id, meeting.joinCode!, "게스트닉");
+
+    const [placeA] = await store.upsertPlaces([
+      {
+        id: "place-close-a",
+        naverPlaceId: "naver-close-a",
+        name: "가카페",
+        category: "카페",
+        address: "서울",
+        roadAddress: "서울",
+        latitude: 37.5,
+        longitude: 127.0,
+        station: "강남",
+        distanceText: "1분"
+      }
+    ]);
+    const [placeB] = await store.upsertPlaces([
+      {
+        id: "place-close-b",
+        naverPlaceId: "naver-close-b",
+        name: "나카페",
+        category: "카페",
+        address: "서울",
+        roadAddress: "서울",
+        latitude: 37.6,
+        longitude: 127.1,
+        station: "역삼",
+        distanceText: "2분"
+      }
+    ]);
+    const hostPlace = await store.registerUserPlace(host.user.id, placeA!.naverPlaceId, "CAFE", "QUIET");
+    const guestPlace = await store.registerUserPlace(guest.user.id, placeB!.naverPlaceId, "CAFE", "QUIET");
+    await store.replaceMyCandidates(meeting.id, host.user.id, [hostPlace.id]);
+    await store.replaceMyCandidates(meeting.id, guest.user.id, [guestPlace.id]);
+    await store.createVote(meeting.id, host.user.id);
+
+    await assert.rejects(
+      () => store.closeVote(meeting.id, host.user.id, false),
+      (error: unknown) => (error as { code?: string }).code === "VOTE_HAS_INCOMPLETE_MEMBERS"
+    );
+
+    const hostSession = await store.voteSession(meeting.id, host.user.id);
+    const hostChoiceId = hostSession.round!.candidateA.id;
+    await store.saveChoice(meeting.id, host.user.id, 1, hostChoiceId);
+    const guestSession = await store.voteSession(meeting.id, guest.user.id);
+    const guestChoiceId =
+      guestSession.round!.candidateA.id === hostChoiceId
+        ? guestSession.round!.candidateA.id
+        : guestSession.round!.candidateB.id;
+    await store.saveChoice(meeting.id, guest.user.id, 1, guestChoiceId);
+
+    const results = await store.closeVote(meeting.id, host.user.id, false);
+    assert.equal(results.voteStatus, "CLOSED");
+    assert.equal(results.meetingStatus, "COMPLETED");
+    assert.equal(results.finalCandidateId !== null, true);
+  });
+
+  it("creates the next recurring occurrence when closeVote resolves a repeated meeting to a single winner", async () => {
+    const host = await store.signup("host-recur", "호스트", "pw1234");
+
+    // --- Meeting A: run to COMPLETED so it can be repeated. ---
+    const meetingA = await store.createMeeting(host.user.id, {
+      name: "반복 테스트 1회차",
+      capacity: 2,
+      meetingAt: "2026-08-01T10:00:00+09:00",
+      purpose: "CAFE",
+      mood: "QUIET"
+    });
+
+    const [placeA1] = await store.upsertPlaces([
+      {
+        id: "place-recur-a1",
+        naverPlaceId: "naver-recur-a1",
+        name: "가카페",
+        category: "카페",
+        address: "서울",
+        roadAddress: "서울",
+        latitude: 37.5,
+        longitude: 127.0,
+        station: "강남",
+        distanceText: "1분"
+      }
+    ]);
+    const [placeA2] = await store.upsertPlaces([
+      {
+        id: "place-recur-a2",
+        naverPlaceId: "naver-recur-a2",
+        name: "나카페",
+        category: "카페",
+        address: "서울",
+        roadAddress: "서울",
+        latitude: 37.6,
+        longitude: 127.1,
+        station: "역삼",
+        distanceText: "2분"
+      }
+    ]);
+    const hostPlaceA1 = await store.registerUserPlace(host.user.id, placeA1!.naverPlaceId, "CAFE", "QUIET");
+    const hostPlaceA2 = await store.registerUserPlace(host.user.id, placeA2!.naverPlaceId, "CAFE", "QUIET");
+    await store.replaceMyCandidates(meetingA.id, host.user.id, [hostPlaceA1.id, hostPlaceA2.id]);
+    await store.createVote(meetingA.id, host.user.id);
+
+    const sessionA = await store.voteSession(meetingA.id, host.user.id);
+    await store.saveChoice(meetingA.id, host.user.id, 1, sessionA.round!.candidateA.id);
+    const resultsA = await store.closeVote(meetingA.id, host.user.id, false);
+    assert.equal(resultsA.meetingStatus, "COMPLETED");
+
+    // --- Repeat meeting A into meeting B with WEEKLY recurrence. ---
+    // repeatMeeting still runs on the legacy snapshot write() path (not part
+    // of this task's conversion scope); it's only used here as test setup to
+    // reach a meeting with recurrenceType set, since that field can't be set
+    // via plain createMeeting.
+    const detailA = await store.detail(meetingA.id, host.user.id);
+    const hostMemberA = detailA.members.find((member) => member.role === "HOST")!;
+    const meetingB = await store.repeatMeeting(meetingA.id, host.user.id, {
+      name: "반복 테스트 2회차",
+      capacity: 2,
+      meetingAt: "2026-08-08T10:00:00+09:00",
+      purpose: "CAFE",
+      mood: "QUIET",
+      memberIds: [hostMemberA.id],
+      recurrence: { type: "WEEKLY" }
+    });
+    assert.equal(meetingB.status, "RECRUITING");
+    assert.equal(meetingB.parentMeetingId, meetingA.id);
+    assert.equal(meetingB.recurrence?.type, "WEEKLY");
+    const seriesId = meetingB.seriesId ?? meetingA.id;
+    assert.equal(seriesId, meetingA.id);
+
+    // --- Run meeting B through candidates/vote to another single-winner close. ---
+    const [placeB1] = await store.upsertPlaces([
+      {
+        id: "place-recur-b1",
+        naverPlaceId: "naver-recur-b1",
+        name: "다카페",
+        category: "카페",
+        address: "서울",
+        roadAddress: "서울",
+        latitude: 37.7,
+        longitude: 127.2,
+        station: "홍대",
+        distanceText: "3분"
+      }
+    ]);
+    const [placeB2] = await store.upsertPlaces([
+      {
+        id: "place-recur-b2",
+        naverPlaceId: "naver-recur-b2",
+        name: "라카페",
+        category: "카페",
+        address: "서울",
+        roadAddress: "서울",
+        latitude: 37.8,
+        longitude: 127.3,
+        station: "합정",
+        distanceText: "4분"
+      }
+    ]);
+    const hostPlaceB1 = await store.registerUserPlace(host.user.id, placeB1!.naverPlaceId, "CAFE", "QUIET");
+    const hostPlaceB2 = await store.registerUserPlace(host.user.id, placeB2!.naverPlaceId, "CAFE", "QUIET");
+    await store.replaceMyCandidates(meetingB.id, host.user.id, [hostPlaceB1.id, hostPlaceB2.id]);
+    await store.createVote(meetingB.id, host.user.id);
+    const sessionB = await store.voteSession(meetingB.id, host.user.id);
+    await store.saveChoice(meetingB.id, host.user.id, 1, sessionB.round!.candidateA.id);
+    const resultsB = await store.closeVote(meetingB.id, host.user.id, false);
+    assert.equal(resultsB.meetingStatus, "COMPLETED");
+
+    // --- Assert createNextRecurringOccurrence fired: a meeting C exists as a
+    // child of B, RECRUITING, carrying the WEEKLY recurrence and series id
+    // forward. ---
+    const home = await store.home(host.user.id);
+    const allMeetings = [...home.ongoingMeetings, ...home.completedMeetings];
+    const meetingC = allMeetings.find((item) => item.parentMeetingId === meetingB.id);
+    assert.ok(meetingC, "expected a next occurrence meeting to exist");
+    assert.equal(meetingC!.status, "RECRUITING");
+    assert.equal(meetingC!.seriesId, seriesId);
+    assert.equal(meetingC!.recurrence?.type, "WEEKLY");
+
+    // Meeting B itself should no longer be eligible to repeat again (its
+    // nextMeetingId is now set), confirmed via repeatMeeting rejecting.
+    await assert.rejects(
+      () =>
+        store.repeatMeeting(meetingB.id, host.user.id, {
+          name: "반복 테스트 3회차",
+          capacity: 2,
+          meetingAt: "2026-08-15T10:00:00+09:00",
+          purpose: "CAFE",
+          mood: "QUIET",
+          memberIds: [hostMemberA.id],
+          recurrence: { type: "WEEKLY" }
+        }),
+      (error: unknown) => (error as { code?: string }).code === "NEXT_MEETING_ALREADY_EXISTS"
+    );
+  });
+
   it("looks up a meeting by join code without loading the whole database", async () => {
     const host = await store.signup("host-lookup", "호스트", "pw1234");
     const meeting = await store.createMeeting(host.user.id, {

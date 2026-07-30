@@ -2505,9 +2505,95 @@ export class PostgresStore {
   }
 
   async closeVote(meetingId: string, userId: string, force: boolean) {
-    return this.write((store) =>
-      store.closeVote(meetingId, userId, force)
-    );
+    return this.withMeetingLock(meetingId, async (client) => {
+      const meetingResult = await client.query<{
+        status: MeetingStatus;
+        hostUserId: string;
+        name: string;
+        capacity: number;
+        meetingAt: Date | string;
+        purpose: Purpose;
+        mood: Mood;
+        joinCode: string;
+        seriesId: string | null;
+        recurrenceType: RecurrenceType | null;
+        recurrenceNextAt: Date | string | null;
+        nextMeetingId: string | null;
+      }>(
+        `
+          select
+            status, host_user_id as "hostUserId", name, capacity,
+            meeting_at as "meetingAt", purpose, mood, join_code as "joinCode",
+            series_id as "seriesId", recurrence_type as "recurrenceType",
+            recurrence_next_at as "recurrenceNextAt", next_meeting_id as "nextMeetingId"
+          from meetings
+          where id = $1 and status <> 'DELETED'
+          for update
+        `,
+        [meetingId]
+      );
+      const meeting = meetingResult.rows[0];
+      if (!meeting) {
+        throw new StoreError(404, "MEETING_NOT_FOUND", "모임을 찾을 수 없습니다.");
+      }
+      if (meeting.hostUserId !== userId) {
+        throw new StoreError(403, "HOST_ONLY", "모임장만 실행할 수 있습니다.");
+      }
+      if (meeting.status !== "VOTING") {
+        throw new StoreError(409, "VOTE_NOT_OPEN", "종료할 수 있는 투표가 없습니다.");
+      }
+
+      const results = await this.computeVoteResults(client, meetingId, userId);
+      if (results.incompleteMembers > 0 && !force) {
+        throw new StoreError(
+          409,
+          "VOTE_HAS_INCOMPLETE_MEMBERS",
+          "아직 투표를 완료하지 않은 인원이 있습니다.",
+          { incompleteMembers: results.incompleteMembers }
+        );
+      }
+
+      const isSingleWinner = results.tiedFirstCandidateIds.length === 1;
+      const voteStatus: "CLOSED" | "FINAL_SELECTION" = isSingleWinner
+        ? "CLOSED"
+        : "FINAL_SELECTION";
+      const meetingStatus: "COMPLETED" | "FINAL_SELECTION" = isSingleWinner
+        ? "COMPLETED"
+        : "FINAL_SELECTION";
+      const finalCandidateId = isSingleWinner ? results.tiedFirstCandidateIds[0]! : null;
+
+      await client.query(
+        `update votes set status = $2, closed_at = now() where meeting_id = $1`,
+        [meetingId, voteStatus]
+      );
+      await client.query(
+        `
+          update meetings
+          set status = $2, final_candidate_id = coalesce($3, final_candidate_id), updated_at = now()
+          where id = $1
+        `,
+        [meetingId, meetingStatus, finalCandidateId]
+      );
+
+      if (isSingleWinner) {
+        await this.createNextRecurringOccurrence(client, {
+          id: meetingId,
+          name: meeting.name,
+          hostUserId: meeting.hostUserId,
+          capacity: meeting.capacity,
+          meetingAt: timestamp(meeting.meetingAt),
+          purpose: meeting.purpose,
+          mood: meeting.mood,
+          joinCode: meeting.joinCode,
+          seriesId: meeting.seriesId,
+          recurrenceType: meeting.recurrenceType,
+          recurrenceNextAt: nullableTimestamp(meeting.recurrenceNextAt),
+          nextMeetingId: meeting.nextMeetingId
+        });
+      }
+
+      return this.computeVoteResults(client, meetingId, userId);
+    });
   }
 
   async finalSelection(

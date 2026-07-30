@@ -2,9 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Convert the highest-impact methods in `apps/mock-api/src/postgres-store.ts` (`lookupMeeting`, `joinMeeting`, `createMeeting`, `deleteMeeting`, `createVote`, `closeVote`, `finalSelection`) plus their shared dependency `voteResults`, off the full-database-snapshot `read()`/`write()` pattern and onto scoped, indexed SQL. Measured against the Render deployment: `lookupMeeting` (a `read()`) took ~1.1–1.24s; `createMeeting` and `deleteMeeting` (both `write()`, which re-saves every table) took ~30s each. `deleteMeeting` was added to this batch after that measurement — its business logic is a single status flip, so converting it is low-risk and high-payoff.
+**Goal:** Convert every remaining meeting-mutating method in `apps/mock-api/src/postgres-store.ts` (`lookupMeeting`, `joinMeeting`, `createMeeting`, `deleteMeeting`, `createVote`, `closeVote`, `finalSelection`, `leaveMeeting`, `kickMember`, `updateUserPlace`, `unregisterUserPlace`) plus their shared dependency `voteResults`, off the full-database-snapshot `read()`/`write()` pattern and onto scoped, indexed SQL. Measured against the Render deployment: `lookupMeeting` (a `read()`) took ~1.1–1.24s; `createMeeting` and `deleteMeeting` (both `write()`, which re-saves every table) took ~30s each. `deleteMeeting` was added to this batch after that measurement — its business logic is a single status flip, so converting it is low-risk and high-payoff. `reset()` is intentionally excluded — it's a full-database wipe-and-reseed by design (used only for `db:seed`/test cleanup, gated behind `DAMO_ENABLE_DB_RESET` in Postgres mode), so "targeted SQL" doesn't apply to it the same way, and it doesn't participate in normal concurrent user traffic.
 
-**Architecture:** Add a `withMeetingLock(meetingId, operation)` transaction helper (per-meeting `pg_advisory_xact_lock`) and reuse it across both the two already-converted methods (`replaceMyCandidates`, `saveChoice`) and the eight new conversions. Add a `computeVoteResults` SQL helper (targeted queries + the exact same in-memory ranking algorithm as `store.ts`) shared by `voteResults`, `closeVote`, `finalSelection`. Add a `createNextRecurringOccurrence` SQL helper shared by `closeVote`/`finalSelection` for recurring-meeting rollover.
+> **Scope expansion (added after Task 3's code review):** the plan originally deferred `leaveMeeting`, `kickMember`, `updateUserPlace`, `unregisterUserPlace` to a later cycle. Task 3's code-quality review found a Critical issue: once *any* method uses the new per-meeting `withMeetingLock` while *other* methods still use the global `write()`/`saveSnapshot()` path, they no longer serialize against each other (different advisory-lock keys) — but `saveSnapshot()` does unscoped `delete from vote_choices` / `delete from candidate_recommendations` (whole table) and reinserts only what was in its stale in-memory snapshot. A `write()`-based transaction for *any* meeting (even an unrelated one) can silently erase a `withMeetingLock`-based transaction's just-committed row for a *different* meeting, with no error. This risk exists for as long as any non-`reset` method still goes through `write()`. Rather than work around it with a temporary dual-lock, this plan now converts all four remaining methods so the `write()`/`saveSnapshot()` path is no longer reachable from any concurrent user-facing mutation — fully closing the gap and fully achieving cross-meeting parallelism, not just for the originally-scoped 8 methods.
+
+**Architecture:** Add a `withMeetingLock(meetingId, operation)` transaction helper (per-meeting `pg_advisory_xact_lock`) and reuse it across the two already-converted methods (`replaceMyCandidates`, `saveChoice`) and all new conversions where the operation touches exactly one meeting (`lookupMeeting` has none since it's read-only, `createMeeting` has none since the meeting doesn't exist yet, `deleteMeeting`, `joinMeeting`, `createVote`, `closeVote`, `finalSelection`, `leaveMeeting`, `kickMember`). `updateUserPlace` and `unregisterUserPlace` can touch *multiple* meetings in one call (`applyToMeetingIds` / "every RECRUITING meeting the user is active in"), so they acquire multiple per-meeting advisory locks directly (not via `withMeetingLock`, which only takes one `meetingId`) — always in ascending sorted `meetingId` order, to prevent a lock-ordering deadlock against another concurrent multi-meeting call. Add a `computeVoteResults` SQL helper (targeted queries + the exact same in-memory ranking algorithm as `store.ts`) shared by `voteResults`, `closeVote`, `finalSelection`. Add a `createNextRecurringOccurrence` SQL helper shared by `closeVote`/`finalSelection` for recurring-meeting rollover.
 
 **Tech Stack:** Node.js `pg` driver (raw SQL, no ORM), `node:test`, TypeScript, Supabase PostgreSQL.
 
@@ -913,7 +915,7 @@ Expected: PASS via the old `read()` path — this test now guards the conversion
           ) as "currentMembers"
         from meetings m
         where m.join_code = $1
-          and m.status not in ('COMPLETED', 'DELETED')
+          and m.status in ('RECRUITING', 'VOTING', 'FINAL_SELECTION')
         limit 1
       `,
       [joinCode]
@@ -1026,6 +1028,14 @@ with:
       for (let attempt = 0; attempt < 50 && !inserted; attempt += 1) {
         const candidateId = randomUUID();
         const joinCode = this.randomJoinCodeCandidate();
+        // Postgres aborts the *entire* transaction on any statement error
+        // (unique violations included) and refuses further statements until
+        // a ROLLBACK or ROLLBACK TO SAVEPOINT. Wrap each attempt in its own
+        // savepoint so a join-code collision only unwinds that attempt,
+        // not the whole transaction — otherwise the *next* statement fails
+        // with opaque `25P02` ("current transaction is aborted") instead of
+        // retrying.
+        await client.query("savepoint join_code_attempt");
         try {
           await client.query(
             `
@@ -1055,6 +1065,7 @@ with:
             "code" in error &&
             error.code === "23505"
           ) {
+            await client.query("rollback to savepoint join_code_attempt");
             continue;
           }
           throw error;
@@ -2078,7 +2089,558 @@ git commit -m "Convert finalSelection to targeted SQL, sharing computeVoteResult
 
 ---
 
-## Task 13: Update documentation
+## Task 13: Convert `leaveMeeting` to SQL
+
+**Files:**
+- Modify: `apps/mock-api/src/postgres-store.ts`
+- Test: `apps/mock-api/src/postgres-store.test.ts`
+
+- [ ] **Step 1: Write the failing test**
+
+```ts
+  it("lets an active member leave and rejects the host", async () => {
+    const host = await store.signup("host-leave", "호스트", "pw1234");
+    const guest = await store.signup("guest-leave", "게스트", "pw1234");
+    const meeting = await store.createMeeting(host.user.id, {
+      name: "탈퇴 테스트",
+      capacity: 3,
+      meetingAt: "2026-08-01T10:00:00+09:00",
+      purpose: "STUDY",
+      mood: "QUIET"
+    });
+    await store.joinMeeting(guest.user.id, meeting.id, meeting.joinCode!, "게스트닉");
+
+    await assert.rejects(
+      () => store.leaveMeeting(meeting.id, host.user.id),
+      (error: unknown) => (error as { code?: string }).code === "HOST_CANNOT_LEAVE"
+    );
+
+    const result = await store.leaveMeeting(meeting.id, guest.user.id);
+    assert.equal(result.left, true);
+
+    const detail = await store.detail(meeting.id, host.user.id);
+    assert.equal(detail.members.length, 1);
+  });
+```
+
+- [ ] **Step 2: Run test to verify current behavior (should already pass)**
+
+Run: `pnpm --filter @damo/mock-api test`
+Expected: PASS via the old `write()` path.
+
+- [ ] **Step 3: Replace `leaveMeeting`**
+
+```ts
+  async leaveMeeting(meetingId: string, userId: string) {
+    return this.withMeetingLock(meetingId, async (client) => {
+      const meetingResult = await client.query<{ status: MeetingStatus }>(
+        `select status from meetings where id = $1 and status <> 'DELETED'`,
+        [meetingId]
+      );
+      const meeting = meetingResult.rows[0];
+      if (!meeting) {
+        throw new StoreError(404, "MEETING_NOT_FOUND", "모임을 찾을 수 없습니다.");
+      }
+      if (meeting.status !== "RECRUITING") {
+        throw new StoreError(409, "LEAVE_NOT_ALLOWED", "투표 시작 후에는 탈퇴할 수 없습니다.");
+      }
+
+      const memberResult = await client.query<{ id: string; role: "HOST" | "MEMBER" }>(
+        `
+          select id, role
+          from meeting_members
+          where meeting_id = $1 and user_id = $2 and status = 'ACTIVE'
+        `,
+        [meetingId, userId]
+      );
+      const member = memberResult.rows[0];
+      if (!member) {
+        throw new StoreError(404, "MEMBER_NOT_FOUND", "모임 참여 정보를 찾을 수 없습니다.");
+      }
+      if (member.role === "HOST") {
+        throw new StoreError(403, "HOST_CANNOT_LEAVE", "모임장은 탈퇴 대신 모임을 삭제해야 합니다.");
+      }
+
+      await client.query(`update meeting_members set status = 'LEFT' where id = $1`, [member.id]);
+      await client.query(
+        `
+          delete from candidate_recommendations recommendation
+          using meeting_candidates candidate
+          where recommendation.candidate_id = candidate.id
+            and candidate.meeting_id = $1
+            and recommendation.member_id = $2
+        `,
+        [meetingId, member.id]
+      );
+      await client.query(
+        `
+          delete from meeting_candidates candidate
+          where candidate.meeting_id = $1
+            and not exists (
+              select 1 from candidate_recommendations r where r.candidate_id = candidate.id
+            )
+        `,
+        [meetingId]
+      );
+      await client.query(`update meetings set updated_at = now() where id = $1`, [meetingId]);
+      return { meetingId, left: true };
+    });
+  }
+```
+
+- [ ] **Step 4: Run the test to verify it passes**
+
+Run: `pnpm --filter @damo/mock-api test`
+Expected: PASS.
+
+- [ ] **Step 5: Typecheck**
+
+Run: `pnpm --filter @damo/mock-api typecheck`
+Expected: no errors.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add apps/mock-api/src/postgres-store.ts apps/mock-api/src/postgres-store.test.ts
+git commit -m "Convert leaveMeeting to targeted SQL"
+```
+
+---
+
+## Task 14: Convert `kickMember` to SQL
+
+**Files:**
+- Modify: `apps/mock-api/src/postgres-store.ts`
+- Test: `apps/mock-api/src/postgres-store.test.ts`
+
+- [ ] **Step 1: Write the failing test**
+
+```ts
+  it("lets the host kick a member and rejects non-hosts / kicking the host", async () => {
+    const host = await store.signup("host-kick", "호스트", "pw1234");
+    const guest = await store.signup("guest-kick", "게스트", "pw1234");
+    const meeting = await store.createMeeting(host.user.id, {
+      name: "강퇴 테스트",
+      capacity: 3,
+      meetingAt: "2026-08-01T10:00:00+09:00",
+      purpose: "MEAL",
+      mood: "FUN"
+    });
+    const joined = await store.joinMeeting(guest.user.id, meeting.id, meeting.joinCode!, "게스트닉");
+    const guestMemberId = joined.members.find((member) => member.userId === guest.user.id)!.id;
+
+    await assert.rejects(
+      () => store.kickMember(meeting.id, guest.user.id, guestMemberId),
+      (error: unknown) => (error as { code?: string }).code === "HOST_ONLY"
+    );
+
+    const detail = await store.kickMember(meeting.id, host.user.id, guestMemberId);
+    assert.equal(detail.members.length, 1);
+  });
+```
+
+- [ ] **Step 2: Run test to verify current behavior (should already pass)**
+
+Run: `pnpm --filter @damo/mock-api test`
+Expected: PASS via the old `write()` path.
+
+- [ ] **Step 3: Replace `kickMember`**
+
+```ts
+  async kickMember(meetingId: string, hostUserId: string, memberId: string) {
+    await this.withMeetingLock(meetingId, async (client) => {
+      const meetingResult = await client.query<{
+        status: MeetingStatus;
+        hostUserId: string;
+      }>(
+        `select status, host_user_id as "hostUserId" from meetings where id = $1 and status <> 'DELETED'`,
+        [meetingId]
+      );
+      const meeting = meetingResult.rows[0];
+      if (!meeting) {
+        throw new StoreError(404, "MEETING_NOT_FOUND", "모임을 찾을 수 없습니다.");
+      }
+      if (meeting.hostUserId !== hostUserId) {
+        throw new StoreError(403, "HOST_ONLY", "모임장만 실행할 수 있습니다.");
+      }
+      if (meeting.status !== "RECRUITING") {
+        throw new StoreError(409, "KICK_NOT_ALLOWED", "투표 시작 후에는 모임원을 내보낼 수 없습니다.");
+      }
+
+      const memberResult = await client.query<{ id: string; role: "HOST" | "MEMBER" }>(
+        `select id, role from meeting_members where id = $1 and meeting_id = $2 and status = 'ACTIVE'`,
+        [memberId, meetingId]
+      );
+      const member = memberResult.rows[0];
+      if (!member || member.role === "HOST") {
+        throw new StoreError(422, "INVALID_MEMBER", "내보낼 수 없는 모임원입니다.");
+      }
+
+      await client.query(`update meeting_members set status = 'KICKED' where id = $1`, [member.id]);
+      await client.query(
+        `
+          delete from candidate_recommendations recommendation
+          using meeting_candidates candidate
+          where recommendation.candidate_id = candidate.id
+            and candidate.meeting_id = $1
+            and recommendation.member_id = $2
+        `,
+        [meetingId, member.id]
+      );
+      await client.query(
+        `
+          delete from meeting_candidates candidate
+          where candidate.meeting_id = $1
+            and not exists (
+              select 1 from candidate_recommendations r where r.candidate_id = candidate.id
+            )
+        `,
+        [meetingId]
+      );
+      await client.query(`update meetings set updated_at = now() where id = $1`, [meetingId]);
+    });
+    return this.detail(meetingId, hostUserId);
+  }
+```
+
+- [ ] **Step 4: Run the test to verify it passes**
+
+Run: `pnpm --filter @damo/mock-api test`
+Expected: PASS.
+
+- [ ] **Step 5: Typecheck**
+
+Run: `pnpm --filter @damo/mock-api typecheck`
+Expected: no errors.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add apps/mock-api/src/postgres-store.ts apps/mock-api/src/postgres-store.test.ts
+git commit -m "Convert kickMember to targeted SQL"
+```
+
+---
+
+## Task 15: Convert `updateUserPlace` to SQL
+
+**Files:**
+- Modify: `apps/mock-api/src/postgres-store.ts`
+- Test: `apps/mock-api/src/postgres-store.test.ts`
+
+This method can touch **multiple** meetings in one call (`applyToMeetingIds`), so it does not use `withMeetingLock` (which only locks one meeting). Instead it acquires one advisory lock per meeting directly, in ascending sorted `meetingId` order, inside its own transaction — sorted order prevents a lock-ordering deadlock if two concurrent calls (e.g. two different users' `updateUserPlace`/`unregisterUserPlace` calls) touch an overlapping set of meetings.
+
+- [ ] **Step 1: Write the failing test**
+
+```ts
+  it("updates a user place and reflects the change onto an active RECRUITING candidate", async () => {
+    const host = await store.signup("host-update-place", "호스트", "pw1234");
+    const meeting = await store.createMeeting(host.user.id, {
+      name: "장소수정 테스트",
+      capacity: 2,
+      meetingAt: "2026-08-01T10:00:00+09:00",
+      purpose: "CAFE",
+      mood: "QUIET"
+    });
+    const [place] = await store.upsertPlaces([
+      {
+        id: "place-update-a",
+        naverPlaceId: "naver-update-a",
+        name: "가카페",
+        category: "카페",
+        address: "서울",
+        roadAddress: "서울",
+        latitude: 37.5,
+        longitude: 127.0,
+        station: "강남",
+        distanceText: "1분"
+      }
+    ]);
+    const hostPlace = await store.registerUserPlace(host.user.id, place!.naverPlaceId, "CAFE", "QUIET");
+    await store.replaceMyCandidates(meeting.id, host.user.id, [hostPlace.id]);
+
+    const updated = await store.updateUserPlace(
+      host.user.id,
+      hostPlace.id,
+      "MEAL",
+      "FUN",
+      [meeting.id]
+    );
+    assert.equal(updated.purpose, "MEAL");
+    assert.equal(updated.mood, "FUN");
+
+    const candidates = await store.publicCandidates(meeting.id, host.user.id);
+    assert.equal(candidates.length, 1);
+  });
+```
+
+- [ ] **Step 2: Run test to verify current behavior (should already pass)**
+
+Run: `pnpm --filter @damo/mock-api test`
+Expected: PASS via the old `write()` path.
+
+- [ ] **Step 3: Replace `updateUserPlace`**
+
+```ts
+  async updateUserPlace(
+    userId: string,
+    userPlaceId: string,
+    purpose: Purpose,
+    mood: Mood,
+    applyToMeetingIds: string[]
+  ) {
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      const sortedMeetingIds = [...new Set(applyToMeetingIds)].sort();
+      for (const meetingId of sortedMeetingIds) {
+        await client.query("select pg_advisory_xact_lock(hashtext($1))", [`meeting:${meetingId}`]);
+      }
+
+      const placeResult = await client.query<{ userPlaceId: string; placeId: string }>(
+        `
+          update user_places
+          set purpose = $3, mood = $4, updated_at = now()
+          where id = $1 and user_id = $2 and is_active = true
+          returning id as "userPlaceId", place_id as "placeId"
+        `,
+        [userPlaceId, userId, purpose, mood]
+      );
+      const place = placeResult.rows[0];
+      if (!place) {
+        throw new StoreError(404, "USER_PLACE_NOT_FOUND", "저장된 장소를 찾을 수 없습니다.");
+      }
+
+      for (const meetingId of sortedMeetingIds) {
+        const meetingResult = await client.query<{ status: MeetingStatus }>(
+          `select status from meetings where id = $1 and status <> 'DELETED'`,
+          [meetingId]
+        );
+        const meeting = meetingResult.rows[0];
+        if (!meeting) {
+          throw new StoreError(404, "MEETING_NOT_FOUND", "모임을 찾을 수 없습니다.");
+        }
+        if (meeting.status !== "RECRUITING") continue;
+
+        await client.query(
+          `
+            update candidate_recommendations recommendation
+            set purpose = $4, mood = $5
+            from meeting_candidates candidate, meeting_members member
+            where recommendation.candidate_id = candidate.id
+              and recommendation.member_id = member.id
+              and candidate.meeting_id = $1
+              and candidate.place_id = $2
+              and member.meeting_id = $1
+              and member.user_id = $3
+              and member.status = 'ACTIVE'
+          `,
+          [meetingId, place.placeId, userId, purpose, mood]
+        );
+        await client.query(
+          `
+            delete from meeting_candidates candidate
+            where candidate.meeting_id = $1
+              and not exists (
+                select 1 from candidate_recommendations r where r.candidate_id = candidate.id
+              )
+          `,
+          [meetingId]
+        );
+        await client.query(`update meetings set updated_at = now() where id = $1`, [meetingId]);
+      }
+
+      await client.query("commit");
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
+    const item = (await this.queryUserPlaces(userId, userPlaceId))[0];
+    if (!item) {
+      throw new StoreError(500, "USER_PLACE_SAVE_FAILED", "내 장소 저장 결과를 찾을 수 없습니다.");
+    }
+    return item;
+  }
+```
+
+- [ ] **Step 4: Run the test to verify it passes**
+
+Run: `pnpm --filter @damo/mock-api test`
+Expected: PASS.
+
+- [ ] **Step 5: Typecheck**
+
+Run: `pnpm --filter @damo/mock-api typecheck`
+Expected: no errors.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add apps/mock-api/src/postgres-store.ts apps/mock-api/src/postgres-store.test.ts
+git commit -m "Convert updateUserPlace to targeted SQL with sorted multi-meeting locking"
+```
+
+---
+
+## Task 16: Convert `unregisterUserPlace` to SQL
+
+**Files:**
+- Modify: `apps/mock-api/src/postgres-store.ts`
+- Test: `apps/mock-api/src/postgres-store.test.ts`
+
+Same multi-meeting locking approach as Task 15: when `applyToActiveMeetings` is true, the set of affected meetings isn't known in advance (it's every `RECRUITING` meeting where the user is an active member), so this queries that set first, then locks each one in sorted order before mutating.
+
+- [ ] **Step 1: Write the failing test**
+
+```ts
+  it("unregisters a user place and removes it from an active candidate when requested", async () => {
+    const host = await store.signup("host-unregister-place", "호스트", "pw1234");
+    const meeting = await store.createMeeting(host.user.id, {
+      name: "등록해제 테스트",
+      capacity: 2,
+      meetingAt: "2026-08-01T10:00:00+09:00",
+      purpose: "DRINK",
+      mood: "TIPSY"
+    });
+    const [place] = await store.upsertPlaces([
+      {
+        id: "place-unregister-a",
+        naverPlaceId: "naver-unregister-a",
+        name: "가호프",
+        category: "호프",
+        address: "서울",
+        roadAddress: "서울",
+        latitude: 37.5,
+        longitude: 127.0,
+        station: "강남",
+        distanceText: "1분"
+      }
+    ]);
+    const hostPlace = await store.registerUserPlace(host.user.id, place!.naverPlaceId, "DRINK", "TIPSY");
+    await store.replaceMyCandidates(meeting.id, host.user.id, [hostPlace.id]);
+
+    const result = await store.unregisterUserPlace(host.user.id, hostPlace.id, true);
+    assert.equal(result.unregistered, true);
+    assert.equal(result.appliedToActiveMeetings, true);
+
+    const candidates = await store.publicCandidates(meeting.id, host.user.id);
+    assert.equal(candidates.length, 0);
+
+    const places = await store.listUserPlaces(host.user.id);
+    assert.equal(places.some((item) => item.id === hostPlace.id), false);
+  });
+```
+
+- [ ] **Step 2: Run test to verify current behavior (should already pass)**
+
+Run: `pnpm --filter @damo/mock-api test`
+Expected: PASS via the old `write()` path.
+
+- [ ] **Step 3: Replace `unregisterUserPlace`**
+
+```ts
+  async unregisterUserPlace(
+    userId: string,
+    userPlaceId: string,
+    applyToActiveMeetings: boolean
+  ) {
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+
+      let meetingIds: string[] = [];
+      if (applyToActiveMeetings) {
+        const meetingsResult = await client.query<{ id: string }>(
+          `
+            select distinct m.id
+            from meetings m
+            join meeting_members member
+              on member.meeting_id = m.id and member.user_id = $1 and member.status = 'ACTIVE'
+            where m.status = 'RECRUITING'
+            order by m.id
+          `,
+          [userId]
+        );
+        meetingIds = meetingsResult.rows.map((row) => row.id);
+        for (const meetingId of meetingIds) {
+          await client.query("select pg_advisory_xact_lock(hashtext($1))", [`meeting:${meetingId}`]);
+        }
+      }
+
+      const placeResult = await client.query<{ userPlaceId: string }>(
+        `
+          update user_places
+          set is_active = false, updated_at = now()
+          where id = $1 and user_id = $2 and is_active = true
+          returning id as "userPlaceId"
+        `,
+        [userPlaceId, userId]
+      );
+      if (!placeResult.rows[0]) {
+        throw new StoreError(404, "USER_PLACE_NOT_FOUND", "저장된 장소를 찾을 수 없습니다.");
+      }
+
+      for (const meetingId of meetingIds) {
+        await client.query(
+          `
+            delete from candidate_recommendations recommendation
+            using meeting_candidates candidate, meeting_members member
+            where recommendation.candidate_id = candidate.id
+              and recommendation.member_id = member.id
+              and candidate.meeting_id = $1
+              and member.meeting_id = $1
+              and member.user_id = $2
+              and member.status = 'ACTIVE'
+              and recommendation.user_place_id = $3
+          `,
+          [meetingId, userId, userPlaceId]
+        );
+        await client.query(
+          `
+            delete from meeting_candidates candidate
+            where candidate.meeting_id = $1
+              and not exists (
+                select 1 from candidate_recommendations r where r.candidate_id = candidate.id
+              )
+          `,
+          [meetingId]
+        );
+        await client.query(`update meetings set updated_at = now() where id = $1`, [meetingId]);
+      }
+
+      await client.query("commit");
+      return { userPlaceId, unregistered: true, appliedToActiveMeetings: applyToActiveMeetings };
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+```
+
+- [ ] **Step 4: Run the test to verify it passes**
+
+Run: `pnpm --filter @damo/mock-api test`
+Expected: PASS.
+
+- [ ] **Step 5: Typecheck and run the full memory-store suite too**
+
+Run: `pnpm --filter @damo/mock-api typecheck && pnpm test:api`
+Expected: both pass.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add apps/mock-api/src/postgres-store.ts apps/mock-api/src/postgres-store.test.ts
+git commit -m "Convert unregisterUserPlace to targeted SQL with sorted multi-meeting locking"
+```
+
+---
+
+## Task 17: Update documentation
 
 **Files:**
 - Modify: `README.md`
@@ -2096,7 +2658,7 @@ In `README.md`, find the "현재 MVP에서 남은 작업" section and replace th
 with:
 
 ```
-- PostgreSQL 저장소의 나머지 변경 작업(leaveMeeting, kickMember, deleteMeeting, updateUserPlace, unregisterUserPlace, reset)을 개별 SQL로 전환
+- PostgreSQL 저장소의 나머지 변경 작업(reset)을 개별 SQL로 전환 — `reset()`은 DB 전체 초기화가 목적이라 대상에서 제외, 그 외 모든 모임 관련 쓰기는 전환 완료
 ```
 
 - [ ] **Step 2: Add a lock-strategy note to `docs/database.md`**
@@ -2132,21 +2694,26 @@ git commit -m "Document the meeting-scoped lock strategy and test-database setup
 
 ---
 
-## Task 14: Final verification
+## Task 18: Final verification
 
 **Files:** none (verification only)
 
-- [ ] **Step 1: Full local verification**
+- [ ] **Step 1: Confirm the Task 3 race condition is fully closed**
+
+Run: `grep -n "return this.write(\|return this.read(" apps/mock-api/src/postgres-store.ts`
+Expected: the only remaining match is inside `reset()` (`return this.write((store) => { store.reset(); }, true);`). If any other method still calls `this.write(` or `this.read(`, the interim data-loss race identified in Task 3's review is NOT fully closed — stop and report BLOCKED rather than proceeding.
+
+- [ ] **Step 2: Full local verification**
 
 Run: `pnpm typecheck && pnpm test:api && pnpm build:render`
 Expected: all three succeed.
 
-- [ ] **Step 2: Full Postgres-backed verification**
+- [ ] **Step 3: Full Postgres-backed verification**
 
 Run: `TEST_DATABASE_URL="$TEST_DATABASE_URL" pnpm --filter @damo/mock-api test`
-Expected: all tests pass, including every new integration test added in Tasks 3–11.
+Expected: all tests pass, including every new integration test added in Tasks 3, 4, 5, 6, 7, 8, 9, 11, 12, 13, 14, 15, 16.
 
-- [ ] **Step 3: Re-measure the original symptom against Render**
+- [ ] **Step 4: Re-measure the original symptom against Render**
 
 This won't reflect the fix until the branch is merged and Render redeploys, but as a sanity check against a local Postgres-backed server:
 
@@ -2165,8 +2732,8 @@ kill %1
 
 Expected: well under the ~1.1–1.24s measured against Render before this work (exact number will vary by network, but it should no longer be dominated by a full-database round trip).
 
-- [ ] **Step 4: Push and open a PR (only if the user asks for this step — do not push automatically)**
+- [ ] **Step 5: Push and open a PR (only if the user asks for this step — do not push automatically)**
 
 ```bash
-git push -u origin main
+git push -u origin codex/postgres-write-path-lightening
 ```

@@ -24,6 +24,7 @@ import { webBaseUrl } from "./config.js";
 import {
   MockStore,
   StoreError,
+  nextRecurringMeetingAt,
   type CandidateRecord,
   type ChoiceRecord,
   type MeetingRecord,
@@ -1049,6 +1050,85 @@ export class PostgresStore {
     } finally {
       client.release();
     }
+  }
+
+  private async createNextRecurringOccurrence(
+    client: PoolClient,
+    meeting: {
+      id: string;
+      name: string;
+      hostUserId: string;
+      capacity: number;
+      meetingAt: string;
+      purpose: Purpose;
+      mood: Mood;
+      joinCode: string;
+      seriesId: string | null;
+      recurrenceType: RecurrenceType | null;
+      recurrenceNextAt: string | null;
+      nextMeetingId: string | null;
+    }
+  ) {
+    if (!meeting.recurrenceType || meeting.nextMeetingId) return;
+    const meetingAt =
+      meeting.recurrenceType === "CUSTOM"
+        ? meeting.recurrenceNextAt
+        : nextRecurringMeetingAt(meeting.meetingAt, meeting.recurrenceType);
+    if (!meetingAt) return;
+
+    const recurrenceType = meeting.recurrenceType === "CUSTOM" ? null : meeting.recurrenceType;
+    const seriesId = meeting.seriesId ?? meeting.id;
+    const nextMeetingId = randomUUID();
+
+    await client.query(
+      `
+        insert into meetings (
+          id, name, host_user_id, capacity, meeting_at, purpose, mood,
+          join_code, status, series_id, parent_meeting_id, recurrence_type
+        )
+        values ($1, $2, $3, $4, $5, $6, $7, $8, 'RECRUITING', $9, $10, $11)
+      `,
+      [
+        nextMeetingId,
+        meeting.name,
+        meeting.hostUserId,
+        meeting.capacity,
+        meetingAt,
+        meeting.purpose,
+        meeting.mood,
+        meeting.joinCode,
+        seriesId,
+        meeting.id,
+        recurrenceType
+      ]
+    );
+
+    const memberRows = await client.query<{
+      userId: string;
+      meetingNickname: string;
+      role: "HOST" | "MEMBER";
+    }>(
+      `
+        select user_id as "userId", meeting_nickname as "meetingNickname", role
+        from meeting_members
+        where meeting_id = $1 and status = 'ACTIVE'
+      `,
+      [meeting.id]
+    );
+    for (const member of memberRows.rows) {
+      await client.query(
+        `
+          insert into meeting_members (id, meeting_id, user_id, meeting_nickname, role, status)
+          values ($1, $2, $3, $4, $5, 'ACTIVE')
+        `,
+        [randomUUID(), nextMeetingId, member.userId, member.meetingNickname, member.role]
+      );
+    }
+
+    await client.query(
+      `update meetings set next_meeting_id = $2, updated_at = now() where id = $1`,
+      [meeting.id, nextMeetingId]
+    );
   }
 
   private async read<T>(operation: (store: MockStore) => T): Promise<T> {

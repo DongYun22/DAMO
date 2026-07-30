@@ -163,6 +163,90 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
     assert.equal(vote.voteId.length > 0, true);
   });
 
+  it("creates a vote with frozen candidates and rotated N-1 sessions", async () => {
+    const host = await store.signup("host-vote", "호스트", "pw1234");
+    const guest = await store.signup("guest-vote", "게스트", "pw1234");
+    const meeting = await store.createMeeting(host.user.id, {
+      name: "투표 생성 테스트",
+      capacity: 2,
+      meetingAt: "2026-08-01T10:00:00+09:00",
+      purpose: "MEAL",
+      mood: "FUN"
+    });
+    await store.joinMeeting(guest.user.id, meeting.id, meeting.joinCode!, "게스트닉");
+
+    const [placeA] = await store.upsertPlaces([
+      {
+        id: "place-vote-a",
+        naverPlaceId: "naver-vote-a",
+        name: "가식당",
+        category: "식당",
+        address: "서울",
+        roadAddress: "서울",
+        latitude: 37.5,
+        longitude: 127.0,
+        station: "강남",
+        distanceText: "1분"
+      }
+    ]);
+    const [placeB] = await store.upsertPlaces([
+      {
+        id: "place-vote-b",
+        naverPlaceId: "naver-vote-b",
+        name: "나식당",
+        category: "식당",
+        address: "서울",
+        roadAddress: "서울",
+        latitude: 37.6,
+        longitude: 127.1,
+        station: "역삼",
+        distanceText: "2분"
+      }
+    ]);
+    const [placeC] = await store.upsertPlaces([
+      {
+        id: "place-vote-c",
+        naverPlaceId: "naver-vote-c",
+        name: "다식당",
+        category: "식당",
+        address: "서울",
+        roadAddress: "서울",
+        latitude: 37.7,
+        longitude: 127.2,
+        station: "홍대",
+        distanceText: "3분"
+      }
+    ]);
+    const hostPlaceA = await store.registerUserPlace(host.user.id, placeA!.naverPlaceId, "MEAL", "FUN");
+    const hostPlaceB = await store.registerUserPlace(host.user.id, placeB!.naverPlaceId, "MEAL", "FUN");
+    const guestPlaceC = await store.registerUserPlace(guest.user.id, placeC!.naverPlaceId, "MEAL", "FUN");
+    await store.replaceMyCandidates(meeting.id, host.user.id, [hostPlaceA.id, hostPlaceB.id]);
+    await store.replaceMyCandidates(meeting.id, guest.user.id, [guestPlaceC.id]);
+
+    await assert.rejects(
+      () => store.createVote(meeting.id, guest.user.id),
+      (error: unknown) => (error as { code?: string }).code === "HOST_ONLY"
+    );
+
+    const { meeting: detail, voteId } = await store.createVote(meeting.id, host.user.id);
+    assert.equal(detail.status, "VOTING");
+    assert.ok(voteId);
+    assert.equal(
+      detail.candidates.every((candidate) => candidate.isFrozen),
+      true
+    );
+
+    const hostSession = await store.voteSession(meeting.id, host.user.id);
+    assert.equal(hostSession.totalRounds, 2);
+    const guestSession = await store.voteSession(meeting.id, guest.user.id);
+    assert.equal(guestSession.totalRounds, 2);
+
+    await assert.rejects(
+      () => store.createVote(meeting.id, host.user.id),
+      (error: unknown) => (error as { code?: string }).code === "VOTE_ALREADY_CREATED"
+    );
+  });
+
   it("computes vote results with correct ranking and tie detection", async () => {
     const host = await store.signup("host-results", "호스트", "pw1234");
     const guest = await store.signup("guest-results", "게스트", "pw1234");

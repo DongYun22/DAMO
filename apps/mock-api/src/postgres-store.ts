@@ -2143,7 +2143,98 @@ export class PostgresStore {
   }
 
   async createVote(meetingId: string, userId: string) {
-    return this.write((store) => store.createVote(meetingId, userId));
+    const voteId = await this.withMeetingLock(meetingId, async (client) => {
+      const meetingResult = await client.query<{
+        status: MeetingStatus;
+        hostUserId: string;
+      }>(
+        `
+          select status, host_user_id as "hostUserId"
+          from meetings
+          where id = $1 and status <> 'DELETED'
+        `,
+        [meetingId]
+      );
+      const meeting = meetingResult.rows[0];
+      if (!meeting) {
+        throw new StoreError(404, "MEETING_NOT_FOUND", "모임을 찾을 수 없습니다.");
+      }
+      if (meeting.hostUserId !== userId) {
+        throw new StoreError(403, "HOST_ONLY", "모임장만 실행할 수 있습니다.");
+      }
+      if (meeting.status !== "RECRUITING") {
+        throw new StoreError(409, "VOTE_ALREADY_CREATED", "이미 투표가 생성됐습니다.");
+      }
+
+      const candidateResult = await client.query<{ id: string }>(
+        `
+          select distinct candidate.id
+          from meeting_candidates candidate
+          join candidate_recommendations recommendation
+            on recommendation.candidate_id = candidate.id
+          where candidate.meeting_id = $1
+          order by candidate.id
+        `,
+        [meetingId]
+      );
+      const candidateIds = candidateResult.rows.map((row) => row.id);
+      if (candidateIds.length < 2) {
+        throw new StoreError(422, "NOT_ENOUGH_CANDIDATES", "투표 후보가 2개 이상 필요합니다.");
+      }
+
+      await client.query(
+        `update meeting_candidates set is_frozen = true where id = any($1::text[])`,
+        [candidateIds]
+      );
+
+      const newVoteId = randomUUID();
+      await client.query(
+        `insert into votes (id, meeting_id, status) values ($1, $2, 'OPEN')`,
+        [newVoteId, meetingId]
+      );
+
+      const memberResult = await client.query<{ id: string; userId: string }>(
+        `
+          select id, user_id as "userId"
+          from meeting_members
+          where meeting_id = $1 and status = 'ACTIVE'
+          order by case when role = 'HOST' then 0 else 1 end, joined_at
+        `,
+        [meetingId]
+      );
+
+      for (const [index, member] of memberResult.rows.entries()) {
+        const offset = index % candidateIds.length;
+        const rotated = [...candidateIds.slice(offset), ...candidateIds.slice(0, offset)];
+        await client.query(
+          `
+            insert into vote_sessions (
+              id, vote_id, meeting_id, member_id, user_id, status,
+              total_rounds, completed_rounds, candidate_order
+            )
+            values ($1, $2, $3, $4, $5, 'NOT_STARTED', $6, 0, $7::text[])
+          `,
+          [
+            randomUUID(),
+            newVoteId,
+            meetingId,
+            member.id,
+            member.userId,
+            candidateIds.length - 1,
+            rotated
+          ]
+        );
+      }
+
+      await client.query(
+        `update meetings set status = 'VOTING', updated_at = now() where id = $1`,
+        [meetingId]
+      );
+
+      return newVoteId;
+    });
+
+    return { meeting: await this.detail(meetingId, userId), voteId };
   }
 
   async voteSession(meetingId: string, userId: string) {

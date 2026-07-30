@@ -940,6 +940,28 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
     assert.equal(detail.members.length, 1);
   });
 
+  it("lets the host kick a member and rejects non-hosts / kicking the host", async () => {
+    const host = await store.signup("host-kick", "호스트", "pw1234");
+    const guest = await store.signup("guest-kick", "게스트", "pw1234");
+    const meeting = await store.createMeeting(host.user.id, {
+      name: "강퇴 테스트",
+      capacity: 3,
+      meetingAt: "2026-08-01T10:00:00+09:00",
+      purpose: "MEAL",
+      mood: "FUN"
+    });
+    const joined = await store.joinMeeting(guest.user.id, meeting.id, meeting.joinCode!, "게스트닉");
+    const guestMemberId = joined.members.find((member) => member.userId === guest.user.id)!.id;
+
+    await assert.rejects(
+      () => store.kickMember(meeting.id, guest.user.id, guestMemberId),
+      (error: unknown) => (error as { code?: string }).code === "HOST_ONLY"
+    );
+
+    const detail = await store.kickMember(meeting.id, host.user.id, guestMemberId);
+    assert.equal(detail.members.length, 1);
+  });
+
   it("joins a meeting, rejects wrong codes, and enforces capacity", async () => {
     const host = await store.signup("host-join", "호스트", "pw1234");
     const guest = await store.signup("guest-join", "게스트", "pw1234");

@@ -2044,9 +2044,58 @@ export class PostgresStore {
   }
 
   async kickMember(meetingId: string, hostUserId: string, memberId: string) {
-    return this.write((store) =>
-      store.kickMember(meetingId, hostUserId, memberId)
-    );
+    await this.withMeetingLock(meetingId, async (client) => {
+      const meetingResult = await client.query<{
+        status: MeetingStatus;
+        hostUserId: string;
+      }>(
+        `select status, host_user_id as "hostUserId" from meetings where id = $1 and status <> 'DELETED'`,
+        [meetingId]
+      );
+      const meeting = meetingResult.rows[0];
+      if (!meeting) {
+        throw new StoreError(404, "MEETING_NOT_FOUND", "모임을 찾을 수 없습니다.");
+      }
+      if (meeting.hostUserId !== hostUserId) {
+        throw new StoreError(403, "HOST_ONLY", "모임장만 실행할 수 있습니다.");
+      }
+      if (meeting.status !== "RECRUITING") {
+        throw new StoreError(409, "KICK_NOT_ALLOWED", "투표 시작 후에는 모임원을 내보낼 수 없습니다.");
+      }
+
+      const memberResult = await client.query<{ id: string; role: "HOST" | "MEMBER" }>(
+        `select id, role from meeting_members where id = $1 and meeting_id = $2 and status = 'ACTIVE'`,
+        [memberId, meetingId]
+      );
+      const member = memberResult.rows[0];
+      if (!member || member.role === "HOST") {
+        throw new StoreError(422, "INVALID_MEMBER", "내보낼 수 없는 모임원입니다.");
+      }
+
+      await client.query(`update meeting_members set status = 'KICKED' where id = $1`, [member.id]);
+      await client.query(
+        `
+          delete from candidate_recommendations recommendation
+          using meeting_candidates candidate
+          where recommendation.candidate_id = candidate.id
+            and candidate.meeting_id = $1
+            and recommendation.member_id = $2
+        `,
+        [meetingId, member.id]
+      );
+      await client.query(
+        `
+          delete from meeting_candidates candidate
+          where candidate.meeting_id = $1
+            and not exists (
+              select 1 from candidate_recommendations r where r.candidate_id = candidate.id
+            )
+        `,
+        [meetingId]
+      );
+      await client.query(`update meetings set updated_at = now() where id = $1`, [meetingId]);
+    });
+    return this.detail(meetingId, hostUserId);
   }
 
   async deleteMeeting(meetingId: string, userId: string) {

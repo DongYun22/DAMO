@@ -256,4 +256,45 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
       return (error as { code?: string }).code === "MEETING_NOT_FOUND";
     });
   });
+
+  it("reports canJoin=false at capacity and drops LEFT members from currentMembers", async () => {
+    const host = await store.signup("host-capacity", "호스트", "pw1234");
+    const guest = await store.signup("guest-capacity", "게스트", "pw1234");
+    const meeting = await store.createMeeting(host.user.id, {
+      name: "정원 테스트",
+      capacity: 2,
+      meetingAt: "2026-08-01T10:00:00+09:00",
+      purpose: "CAFE",
+      mood: "QUIET"
+    });
+    await store.joinMeeting(guest.user.id, meeting.id, meeting.joinCode!, "게스트닉");
+
+    const full = await store.lookupMeeting(meeting.joinCode!);
+    assert.equal(full.currentMembers, 2);
+    assert.equal(full.canJoin, false);
+
+    await store.leaveMeeting(meeting.id, guest.user.id);
+
+    const afterLeave = await store.lookupMeeting(meeting.joinCode!);
+    assert.equal(afterLeave.currentMembers, 1);
+    assert.equal(afterLeave.canJoin, true);
+  });
+
+  it("does not find a meeting by join code once it has been deleted", async () => {
+    const host = await store.signup("host-deleted", "호스트", "pw1234");
+    const meeting = await store.createMeeting(host.user.id, {
+      name: "삭제 테스트",
+      capacity: 2,
+      meetingAt: "2026-08-01T10:00:00+09:00",
+      purpose: "CAFE",
+      mood: "QUIET"
+    });
+    const joinCode = meeting.joinCode!;
+
+    await store.deleteMeeting(meeting.id, host.user.id);
+
+    await assert.rejects(() => store.lookupMeeting(joinCode), (error: unknown) => {
+      return (error as { code?: string }).code === "MEETING_NOT_FOUND";
+    });
+  });
 });

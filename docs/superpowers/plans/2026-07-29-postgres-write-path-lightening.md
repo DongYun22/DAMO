@@ -915,7 +915,7 @@ Expected: PASS via the old `read()` path — this test now guards the conversion
           ) as "currentMembers"
         from meetings m
         where m.join_code = $1
-          and m.status not in ('COMPLETED', 'DELETED')
+          and m.status in ('RECRUITING', 'VOTING', 'FINAL_SELECTION')
         limit 1
       `,
       [joinCode]

@@ -115,6 +115,10 @@ const userPlaceFromRow = (row: UserPlaceRow): UserPlace => ({
 export class PostgresStore {
   constructor(private readonly pool: Pool = createDatabasePool()) {}
 
+  private randomJoinCodeCandidate() {
+    return Math.floor(1000 + Math.random() * 9000).toString();
+  }
+
   private async queryPublicCandidates(
     client: PoolClient,
     meetingId: string,
@@ -1579,7 +1583,76 @@ export class PostgresStore {
   }
 
   async createMeeting(userId: string, input: CreateMeetingInput) {
-    return this.write((store) => store.createMeeting(userId, input));
+    const client = await this.pool.connect();
+    let meetingId = "";
+    try {
+      await client.query("begin");
+      const userResult = await client.query<{ nickname: string }>(
+        `select nickname from users where id = $1`,
+        [userId]
+      );
+      const nickname = userResult.rows[0]?.nickname;
+      if (!nickname) {
+        throw new StoreError(401, "AUTH_REQUIRED", "로그인이 필요합니다.");
+      }
+
+      let inserted = false;
+      for (let attempt = 0; attempt < 50 && !inserted; attempt += 1) {
+        const candidateId = randomUUID();
+        const joinCode = this.randomJoinCodeCandidate();
+        try {
+          await client.query(
+            `
+              insert into meetings (
+                id, name, host_user_id, capacity, meeting_at, purpose, mood,
+                join_code, status
+              )
+              values ($1, $2, $3, $4, $5, $6, $7, $8, 'RECRUITING')
+            `,
+            [
+              candidateId,
+              input.name,
+              userId,
+              input.capacity,
+              input.meetingAt,
+              input.purpose,
+              input.mood,
+              joinCode
+            ]
+          );
+          meetingId = candidateId;
+          inserted = true;
+        } catch (error) {
+          if (
+            typeof error === "object" &&
+            error !== null &&
+            "code" in error &&
+            error.code === "23505"
+          ) {
+            continue;
+          }
+          throw error;
+        }
+      }
+      if (!inserted) {
+        throw new StoreError(500, "JOIN_CODE_EXHAUSTED", "가입 코드를 발급할 수 없습니다.");
+      }
+
+      await client.query(
+        `
+          insert into meeting_members (id, meeting_id, user_id, meeting_nickname, role, status)
+          values ($1, $2, $3, $4, 'HOST', 'ACTIVE')
+        `,
+        [randomUUID(), meetingId, userId, nickname]
+      );
+      await client.query("commit");
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
+    return this.detail(meetingId, userId);
   }
 
   async repeatMeeting(

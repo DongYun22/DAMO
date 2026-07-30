@@ -297,4 +297,21 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
       return (error as { code?: string }).code === "MEETING_NOT_FOUND";
     });
   });
+
+  it("creates a meeting with a unique join code and a host member", async () => {
+    const host = await store.signup("host-create", "호스트", "pw1234");
+    const meeting = await store.createMeeting(host.user.id, {
+      name: "생성 테스트",
+      capacity: 3,
+      meetingAt: "2026-08-01T10:00:00+09:00",
+      purpose: "DRINK",
+      mood: "TIPSY"
+    });
+
+    assert.equal(meeting.hostUserId, host.user.id);
+    assert.match(meeting.joinCode!, /^\d{4}$/);
+    assert.equal(meeting.members.length, 1);
+    assert.equal(meeting.members[0]!.role, "HOST");
+    assert.equal(meeting.status, "RECRUITING");
+  });
 });

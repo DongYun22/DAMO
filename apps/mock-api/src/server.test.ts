@@ -82,6 +82,55 @@ describe("DAMO mock API", () => {
     assert.notEqual(anotherBody.data.joinCode, body.data.joinCode);
   });
 
+  it("blocks a KICKED member from rejoining a meeting via join code", async () => {
+    await store.reset();
+    const created = await request("/api/v1/meetings", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "강퇴 재입장 테스트",
+        capacity: 4,
+        meetingAt: "2026-08-20T10:00:00+09:00",
+        purpose: "CAFE",
+        mood: "QUIET"
+      })
+    });
+    assert.equal(created.status, 201);
+    const createdBody = await created.json();
+    const meetingId = createdBody.data.id;
+    const joinCode = createdBody.data.joinCode;
+
+    const joined = await request(`/api/v1/meetings/${meetingId}/join`, {
+      method: "POST",
+      headers: { authorization: "Bearer mock-token-user-2" },
+      body: JSON.stringify({ joinCode, meetingNickname: "게스트닉" })
+    });
+    assert.equal(joined.status, 200);
+
+    const detail = await request(`/api/v1/meetings/${meetingId}`);
+    const detailBody = await detail.json();
+    const guestMember = detailBody.data.members.find(
+      (member: { userId: string }) => member.userId === "user-2"
+    );
+    assert.ok(guestMember);
+
+    const kicked = await request(
+      `/api/v1/meetings/${meetingId}/members/${guestMember.id}/kick`,
+      { method: "POST" }
+    );
+    assert.equal(kicked.status, 200);
+
+    // Plenty of room remains (capacity 4, only the host left), but a KICKED
+    // member must never be allowed to walk back in with the join code.
+    const rejoin = await request(`/api/v1/meetings/${meetingId}/join`, {
+      method: "POST",
+      headers: { authorization: "Bearer mock-token-user-2" },
+      body: JSON.stringify({ joinCode, meetingNickname: "게스트닉2" })
+    });
+    assert.equal(rejoin.status, 403);
+    const rejoinBody = await rejoin.json();
+    assert.equal(rejoinBody.error.code, "PREVIOUSLY_KICKED");
+  });
+
   it("archives a past-due meeting in the completed home section without changing its status", async () => {
     await store.reset();
     const created = await request("/api/v1/meetings", {

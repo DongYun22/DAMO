@@ -1755,7 +1755,17 @@ export class PostgresStore {
       );
       const existing = existingResult.rows[0];
 
-      // A brand-new member and a LEFT/KICKED member rejoining both add a new
+      // A KICKED member was removed by the host and must never be able to
+      // walk back in with the join code, regardless of capacity.
+      if (existing && existing.status === "KICKED") {
+        throw new StoreError(
+          403,
+          "PREVIOUSLY_KICKED",
+          "모임장에 의해 내보내진 모임에는 다시 가입할 수 없습니다."
+        );
+      }
+
+      // A brand-new member and a LEFT member rejoining both add a new
       // ACTIVE seat, so both must be checked against capacity. An already-ACTIVE
       // member calling joinMeeting again (e.g. a duplicate request) doesn't
       // change the ACTIVE count, so it's exempt from the check.

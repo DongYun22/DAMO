@@ -412,6 +412,33 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
     assert.equal(rejoinedMember!.role, "MEMBER");
   });
 
+  it("rejects a KICKED member's rejoin attempt regardless of capacity", async () => {
+    const host = await store.signup("host-kicked-rejoin", "호스트", "pw1234");
+    const guest = await store.signup("guest-kicked-rejoin", "게스트", "pw1234");
+    const meeting = await store.createMeeting(host.user.id, {
+      name: "강퇴 재입장 테스트",
+      capacity: 3,
+      meetingAt: "2026-08-01T10:00:00+09:00",
+      purpose: "CAFE",
+      mood: "FUN"
+    });
+
+    await store.joinMeeting(guest.user.id, meeting.id, meeting.joinCode!, "게스트닉");
+
+    const detail = await store.detail(meeting.id, host.user.id);
+    const guestMember = detail.members.find((member) => member.userId === guest.user.id);
+    assert.ok(guestMember);
+
+    await store.kickMember(meeting.id, host.user.id, guestMember!.id);
+
+    // Plenty of room left (capacity 3, only the host remains), but a KICKED
+    // member must never be allowed to walk back in with the join code.
+    await assert.rejects(
+      () => store.joinMeeting(guest.user.id, meeting.id, meeting.joinCode!, "게스트닉2"),
+      (error: unknown) => (error as { code?: string }).code === "PREVIOUSLY_KICKED"
+    );
+  });
+
   it("creates a meeting with a unique join code and a host member", async () => {
     const host = await store.signup("host-create", "호스트", "pw1234");
     const meeting = await store.createMeeting(host.user.id, {

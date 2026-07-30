@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Convert every remaining meeting-mutating method in `apps/mock-api/src/postgres-store.ts` (`lookupMeeting`, `joinMeeting`, `createMeeting`, `deleteMeeting`, `createVote`, `closeVote`, `finalSelection`, `leaveMeeting`, `kickMember`, `updateUserPlace`, `unregisterUserPlace`) plus their shared dependency `voteResults`, off the full-database-snapshot `read()`/`write()` pattern and onto scoped, indexed SQL. Measured against the Render deployment: `lookupMeeting` (a `read()`) took ~1.1–1.24s; `createMeeting` and `deleteMeeting` (both `write()`, which re-saves every table) took ~30s each. `deleteMeeting` was added to this batch after that measurement — its business logic is a single status flip, so converting it is low-risk and high-payoff. `reset()` is intentionally excluded — it's a full-database wipe-and-reseed by design (used only for `db:seed`/test cleanup, gated behind `DAMO_ENABLE_DB_RESET` in Postgres mode), so "targeted SQL" doesn't apply to it the same way, and it doesn't participate in normal concurrent user traffic.
+**Goal:** Convert every remaining meeting-mutating method in `apps/mock-api/src/postgres-store.ts` (`lookupMeeting`, `joinMeeting`, `createMeeting`, `deleteMeeting`, `createVote`, `closeVote`, `finalSelection`, `leaveMeeting`, `kickMember`, `updateUserPlace`, `unregisterUserPlace`, `repeatMeeting`) plus their shared dependency `voteResults`, off the full-database-snapshot `read()`/`write()` pattern and onto scoped, indexed SQL. Measured against the Render deployment: `lookupMeeting` (a `read()`) took ~1.1–1.24s; `createMeeting` and `deleteMeeting` (both `write()`, which re-saves every table) took ~30s each. `deleteMeeting` was added to this batch after that measurement — its business logic is a single status flip, so converting it is low-risk and high-payoff. `reset()` is intentionally excluded — it's a full-database wipe-and-reseed by design (used only for `db:seed`/test cleanup, gated behind `DAMO_ENABLE_DB_RESET` in Postgres mode), so "targeted SQL" doesn't apply to it the same way, and it doesn't participate in normal concurrent user traffic.
 
 > **Scope expansion (added after Task 3's code review):** the plan originally deferred `leaveMeeting`, `kickMember`, `updateUserPlace`, `unregisterUserPlace` to a later cycle. Task 3's code-quality review found a Critical issue: once *any* method uses the new per-meeting `withMeetingLock` while *other* methods still use the global `write()`/`saveSnapshot()` path, they no longer serialize against each other (different advisory-lock keys) — but `saveSnapshot()` does unscoped `delete from vote_choices` / `delete from candidate_recommendations` (whole table) and reinserts only what was in its stale in-memory snapshot. A `write()`-based transaction for *any* meeting (even an unrelated one) can silently erase a `withMeetingLock`-based transaction's just-committed row for a *different* meeting, with no error. This risk exists for as long as any non-`reset` method still goes through `write()`. Rather than work around it with a temporary dual-lock, this plan now converts all four remaining methods so the `write()`/`saveSnapshot()` path is no longer reachable from any concurrent user-facing mutation — fully closing the gap and fully achieving cross-meeting parallelism, not just for the originally-scoped 8 methods.
 
@@ -2640,7 +2640,219 @@ git commit -m "Convert unregisterUserPlace to targeted SQL with sorted multi-mee
 
 ---
 
-## Task 17: Update documentation
+## Task 17: Convert `repeatMeeting` to SQL
+
+**Files:**
+- Modify: `apps/mock-api/src/postgres-store.ts`
+- Test: `apps/mock-api/src/postgres-store.test.ts`
+
+> **Scope addition (found during Task 16's review, 2026-07-30):** `repeatMeeting` was never in this plan's original method list, but it's a real user-facing route (`POST /api/v1/meetings/:meetingId/repeat`) that still calls `this.write(...)`. Task 19's own verification step checks that `reset()` is the *only* remaining `write()`/`read()` caller — `repeatMeeting` would fail that check. Converting it here closes the gap for real, not just for the originally-scoped 12 methods.
+
+- [ ] **Step 1: Write a failing test**
+
+Add a test to `apps/mock-api/src/postgres-store.test.ts` covering the full `repeatMeeting` flow: create a meeting, join a guest, run it to a single-winner `closeVote` (COMPLETED, no recurrence), then call `repeatMeeting` with both members selected and assert the new meeting is `RECRUITING`, shares the source's `joinCode`, has `parentMeetingId` equal to the source, and has both members `ACTIVE`. Also cover the error paths using `assert.rejects`:
+- Non-host caller → `HOST_ONLY`
+- Calling on a meeting that isn't `COMPLETED` yet → `MEETING_NOT_COMPLETED`
+- Calling a second time after a next meeting already exists → `NEXT_MEETING_ALREADY_EXISTS`
+- `memberIds` that excludes the host → `HOST_MEMBER_REQUIRED`
+- `memberIds` containing an id that wasn't an active member of the source meeting → `INVALID_MEMBER_SELECTION`
+- `capacity` smaller than the selected member count → `CAPACITY_TOO_SMALL`
+- `recurrence: { type: "CUSTOM", customNextMeetingAt: <a date at or before meetingAt> }` → `INVALID_CUSTOM_RECURRENCE_DATE`
+
+Follow the existing test file's conventions (signup/createMeeting/joinMeeting/upsertPlaces/registerUserPlace/replaceMyCandidates/createVote/saveChoice/closeVote helpers already used throughout this file) for setup.
+
+- [ ] **Step 2: Run test to verify current behavior (should already pass)**
+
+Run: `pnpm --filter @damo/mock-api test`
+Expected: PASS via the old `write()` path.
+
+- [ ] **Step 3: Replace `repeatMeeting`**
+
+```ts
+  async repeatMeeting(
+    sourceMeetingId: string,
+    userId: string,
+    input: RepeatMeetingInput
+  ) {
+    const newMeetingId = await this.withMeetingLock(sourceMeetingId, async (client) => {
+      const sourceResult = await client.query<{
+        hostUserId: string;
+        status: MeetingStatus;
+        joinCode: string;
+        seriesId: string | null;
+        nextMeetingId: string | null;
+      }>(
+        `
+          select
+            host_user_id as "hostUserId", status, join_code as "joinCode",
+            series_id as "seriesId", next_meeting_id as "nextMeetingId"
+          from meetings
+          where id = $1 and status <> 'DELETED'
+        `,
+        [sourceMeetingId]
+      );
+      const source = sourceResult.rows[0];
+      if (!source) {
+        throw new StoreError(404, "MEETING_NOT_FOUND", "모임을 찾을 수 없습니다.");
+      }
+      if (source.hostUserId !== userId) {
+        throw new StoreError(403, "HOST_ONLY", "모임장만 실행할 수 있습니다.");
+      }
+      if (source.status !== "COMPLETED") {
+        throw new StoreError(409, "MEETING_NOT_COMPLETED", "완료된 모임에서만 다시 만나기를 시작할 수 있습니다.");
+      }
+      if (source.nextMeetingId) {
+        throw new StoreError(
+          409,
+          "NEXT_MEETING_ALREADY_EXISTS",
+          "이미 다음 회차가 만들어져 있습니다.",
+          { meetingId: source.nextMeetingId }
+        );
+      }
+
+      const memberResult = await client.query<{
+        id: string;
+        userId: string;
+        meetingNickname: string;
+        role: "HOST" | "MEMBER";
+      }>(
+        `
+          select id, user_id as "userId", meeting_nickname as "meetingNickname", role
+          from meeting_members
+          where meeting_id = $1 and status = 'ACTIVE'
+        `,
+        [sourceMeetingId]
+      );
+      const sourceMembers = memberResult.rows;
+      const selectedIds = new Set(input.memberIds);
+      const selectedMembers = sourceMembers.filter((member) => selectedIds.has(member.id));
+      const hostMember = sourceMembers.find((member) => member.role === "HOST");
+      if (!hostMember || !selectedIds.has(hostMember.id)) {
+        throw new StoreError(422, "HOST_MEMBER_REQUIRED", "모임장은 다음 회차에 반드시 포함되어야 합니다.");
+      }
+      if (selectedMembers.length !== selectedIds.size) {
+        throw new StoreError(422, "INVALID_MEMBER_SELECTION", "이전 모임에 참여한 모임원만 선택할 수 있습니다.");
+      }
+      if (selectedMembers.length > input.capacity) {
+        throw new StoreError(422, "CAPACITY_TOO_SMALL", "선택한 모임원 수보다 정원을 작게 설정할 수 없습니다.");
+      }
+      if (
+        input.recurrence?.type === "CUSTOM" &&
+        (!input.recurrence.customNextMeetingAt ||
+          new Date(input.recurrence.customNextMeetingAt).getTime() <=
+            new Date(input.meetingAt).getTime())
+      ) {
+        throw new StoreError(
+          422,
+          "INVALID_CUSTOM_RECURRENCE_DATE",
+          "직접 입력한 다음 일정은 이번 회차보다 뒤여야 합니다."
+        );
+      }
+
+      const seriesId = source.seriesId ?? sourceMeetingId;
+
+      // Reuses the source's join_code (same continuity intent as
+      // createNextRecurringOccurrence). The source is already COMPLETED
+      // (checked above), so it's outside meetings_active_join_code_unique's
+      // predicate — but an unrelated active meeting could coincidentally
+      // hold the same code, so retry with a fresh random code on collision,
+      // same savepoint pattern as createMeeting/createNextRecurringOccurrence.
+      let newId = "";
+      let inserted = false;
+      for (let attempt = 0; attempt < 50 && !inserted; attempt += 1) {
+        const candidateId = randomUUID();
+        const joinCode = attempt === 0 ? source.joinCode : this.randomJoinCodeCandidate();
+        await client.query("savepoint repeat_meeting_join_code_attempt");
+        try {
+          await client.query(
+            `
+              insert into meetings (
+                id, name, host_user_id, capacity, meeting_at, purpose, mood,
+                join_code, status, series_id, parent_meeting_id,
+                recurrence_type, recurrence_next_at
+              )
+              values (
+                $1, $2, $3, $4, $5, $6, $7, $8, 'RECRUITING', $9, $10, $11, $12
+              )
+            `,
+            [
+              candidateId,
+              input.name,
+              source.hostUserId,
+              input.capacity,
+              input.meetingAt,
+              input.purpose,
+              input.mood,
+              joinCode,
+              seriesId,
+              sourceMeetingId,
+              input.recurrence?.type ?? null,
+              input.recurrence?.customNextMeetingAt ?? null
+            ]
+          );
+          newId = candidateId;
+          inserted = true;
+        } catch (error) {
+          if (
+            typeof error === "object" &&
+            error !== null &&
+            "code" in error &&
+            error.code === "23505"
+          ) {
+            await client.query("rollback to savepoint repeat_meeting_join_code_attempt");
+            continue;
+          }
+          throw error;
+        }
+      }
+      if (!inserted) {
+        throw new StoreError(500, "JOIN_CODE_EXHAUSTED", "가입 코드를 발급할 수 없습니다.");
+      }
+
+      for (const member of selectedMembers) {
+        await client.query(
+          `
+            insert into meeting_members (id, meeting_id, user_id, meeting_nickname, role, status)
+            values ($1, $2, $3, $4, $5, 'ACTIVE')
+          `,
+          [randomUUID(), newId, member.userId, member.meetingNickname, member.role]
+        );
+      }
+
+      await client.query(
+        `update meetings set next_meeting_id = $2, updated_at = now() where id = $1`,
+        [sourceMeetingId, newId]
+      );
+
+      return newId;
+    });
+
+    return this.detail(newMeetingId, userId);
+  }
+```
+
+Note: this mirrors `createNextRecurringOccurrence`'s join-code-reuse-with-retry pattern (Task 10), but unlike that helper, there's no ordering precondition to worry about here — `repeatMeeting` only runs once the source is already `COMPLETED` (checked at the top of this same method), so the source row is already outside `meetings_active_join_code_unique`'s predicate before the INSERT ever runs.
+
+- [ ] **Step 4: Run the test to verify it passes**
+
+Run: `pnpm --filter @damo/mock-api test`
+Expected: PASS.
+
+- [ ] **Step 5: Typecheck and run the full memory-store suite too**
+
+Run: `pnpm --filter @damo/mock-api typecheck && pnpm test:api`
+Expected: both pass.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add apps/mock-api/src/postgres-store.ts apps/mock-api/src/postgres-store.test.ts
+git commit -m "Convert repeatMeeting to targeted SQL, closing the write() gap entirely"
+```
+
+---
+
+## Task 18: Update documentation
 
 **Files:**
 - Modify: `README.md`
@@ -2694,14 +2906,14 @@ git commit -m "Document the meeting-scoped lock strategy and test-database setup
 
 ---
 
-## Task 18: Final verification
+## Task 19: Final verification
 
 **Files:** none (verification only)
 
 - [ ] **Step 1: Confirm the Task 3 race condition is fully closed**
 
 Run: `grep -n "return this.write(\|return this.read(" apps/mock-api/src/postgres-store.ts`
-Expected: the only remaining match is inside `reset()` (`return this.write((store) => { store.reset(); }, true);`). If any other method still calls `this.write(` or `this.read(`, the interim data-loss race identified in Task 3's review is NOT fully closed — stop and report BLOCKED rather than proceeding.
+Expected: the only remaining match is inside `reset()` (`return this.write((store) => { store.reset(); }, true);`). If any other method still calls `this.write(` or `this.read(`, the interim data-loss race identified in Task 3's review (and the `repeatMeeting` gap found in Task 16's review) is NOT fully closed — stop and report BLOCKED rather than proceeding.
 
 - [ ] **Step 2: Full local verification**
 
@@ -2711,7 +2923,7 @@ Expected: all three succeed.
 - [ ] **Step 3: Full Postgres-backed verification**
 
 Run: `TEST_DATABASE_URL="$TEST_DATABASE_URL" pnpm --filter @damo/mock-api test`
-Expected: all tests pass, including every new integration test added in Tasks 3, 4, 5, 6, 7, 8, 9, 11, 12, 13, 14, 15, 16.
+Expected: all tests pass, including every new integration test added in Tasks 3, 4, 5, 6, 7, 8, 9, 11, 12, 13, 14, 15, 16, 17.
 
 - [ ] **Step 4: Re-measure the original symptom against Render**
 

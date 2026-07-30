@@ -1,7 +1,9 @@
 import {
   ArrowLeft,
   Check,
+  ChevronDown,
   ChevronRight,
+  ChevronUp,
   CircleUserRound,
   Home,
   Map,
@@ -708,16 +710,27 @@ export function SummaryBanner({
   description: string;
   alert?: boolean;
 }) {
+  const [expanded, setExpanded] = useState(true);
   return (
-    <div className={`summary-banner${alert ? " summary-banner--alert" : ""}`}>
+    <button
+      type="button"
+      className={`summary-banner${alert ? " summary-banner--alert" : ""}${
+        expanded ? "" : " summary-banner--collapsed"
+      }`}
+      onClick={() => setExpanded((current) => !current)}
+      aria-expanded={expanded}
+    >
       <span>
         <Sparkles size={20} />
       </span>
       <div>
         <strong>{title}</strong>
-        <p>{description}</p>
+        {expanded ? <p>{description}</p> : null}
       </div>
-    </div>
+      <span className="summary-banner__chevron" aria-hidden="true">
+        {expanded ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
+      </span>
+    </button>
   );
 }
 
@@ -725,7 +738,7 @@ export function ProfileButton({ nickname }: { nickname: string }) {
   return (
     <span className="profile-button" aria-label={`${nickname} 계정`}>
       <CircleUserRound size={22} />
-      <span>{nickname}</span>
+      <span title={nickname}>{nickname}</span>
     </span>
   );
 }

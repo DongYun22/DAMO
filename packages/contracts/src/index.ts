@@ -15,6 +15,10 @@ export interface MeetingRecurrence {
   type: RecurrenceType;
   customNextMeetingAt?: string | null;
 }
+
+export interface ConfigureMeetingRecurrenceInput {
+  recurrence: MeetingRecurrence;
+}
 export type MeetingRole = "HOST" | "MEMBER";
 export type MemberStatus = "ACTIVE" | "LEFT" | "KICKED";
 export type VoteStatus = "OPEN" | "FINAL_SELECTION" | "CLOSED";
@@ -50,6 +54,14 @@ export interface UserPlace {
   isActive: boolean;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface CandidateMeetingTarget {
+  id: string;
+  name: string;
+  meetingAt: string;
+  purpose: Purpose;
+  mood: Mood;
 }
 
 export interface EligiblePlace extends UserPlace {

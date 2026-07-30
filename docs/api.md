@@ -192,7 +192,8 @@ GET /api/v1/me/places?limit=20&cursor={nextCursor}
 | --- | --- | --- |
 | `GET` | `/me/home` | 진행 중·완료 모임 목록 |
 | `POST` | `/meetings` | 모임 생성 |
-| `POST` | `/meetings/{meetingId}/repeat` | 완료된 모임에서 새 회차 생성 |
+| `POST` | `/meetings/{meetingId}/repeat` | 완료되었거나 날짜가 지난 모임에서 새 회차 생성 |
+| `PUT` | `/meetings/{meetingId}/recurrence` | 진행 중 모임을 정기 모임으로 설정 |
 | `POST` | `/meetings/lookup` | 4자리 코드로 모임 확인 |
 | `GET` | `/meetings/{meetingId}` | 모임 상세 조회 |
 | `POST` | `/meetings/{meetingId}/join` | 모임 가입 또는 재가입 |
@@ -208,6 +209,7 @@ GET /api/v1/me/places?limit=20&cursor={nextCursor}
 | `GET` | `/map/places/{naverPlaceId}` | 장소 상세 조회 |
 | `GET` | `/me/places` | 내 장소 목록 |
 | `POST` | `/me/places` | 내 장소 등록 |
+| `GET` | `/me/places/{userPlaceId}/candidate-meetings` | 변경사항을 반영할 수 있는 투표 전 모임 |
 | `PATCH` | `/me/places/{userPlaceId}` | 내 장소 분류 변경 |
 | `POST` | `/me/places/{userPlaceId}/unregister` | 내 장소 등록 해제 |
 
@@ -504,6 +506,17 @@ POST /api/v1/me/places
 
 ### 6.5 내 장소 변경
 
+`이번 투표에도 반영`을 누르면 먼저 다음 API로 선택 가능한 모임을 조회한다.
+
+```http
+GET /api/v1/me/places/{userPlaceId}/candidate-meetings
+```
+
+- 현재 사용자가 활성 모임원으로 참여 중이다.
+- 모임 상태가 `RECRUITING`이다.
+- 해당 내 장소가 현재 사용자의 후보로 등록되어 있다.
+- 위 조건을 모두 만족하는 모임만 반환하며 여러 모임을 복수선택할 수 있다.
+
 ```http
 PATCH /api/v1/me/places/{userPlaceId}
 ```
@@ -636,7 +649,7 @@ POST /api/v1/meetings
 POST /api/v1/meetings/{meetingId}/repeat
 ```
 
-완료된 모임의 모임장만 요청할 수 있다.
+완료되었거나 날짜가 지난 모임의 모임장만 요청할 수 있다.
 
 ```json
 {
@@ -656,6 +669,8 @@ POST /api/v1/meetings/{meetingId}/repeat
 - `memberIds`에는 이전 회차의 활성 모임원만 넣을 수 있으며 모임장은 반드시 포함한다.
 - 정원은 선택된 모임원 수보다 작을 수 없다.
 - 새 회차는 이전 회차의 가입 코드를 유지하고 후보·투표 기록은 새로 시작한다.
+- 새 회차 날짜의 기본값은 요청 시점으로부터 7일 뒤이며 모임장이 변경할 수 있다.
+- 새 회차의 분은 모바일 선택 UI에서 `00`부터 `59`까지 고를 수 있다.
 - `recurrence.type`은 `WEEKLY`, `MONTHLY`, `CUSTOM` 중 하나다.
 - `CUSTOM`이면 `customNextMeetingAt`이 필요하며 이번 회차 일정보다 뒤여야 한다.
 - 반복하지 않으면 `recurrence`를 `null`로 보낸다.
@@ -671,7 +686,31 @@ POST /api/v1/meetings/{meetingId}/repeat
 | `CAPACITY_TOO_SMALL` | 정원이 자동 참여 모임원 수보다 작음 |
 | `INVALID_CUSTOM_RECURRENCE_DATE` | 직접 입력한 다음 일정이 올바르지 않음 |
 
-### 7.3 코드로 모임 확인
+### 7.3 진행 중 모임 정기화
+
+```http
+PUT /api/v1/meetings/{meetingId}/recurrence
+```
+
+진행 중 모임의 모임장만 요청한다. 호출 즉시 새 모임을 만들지 않고 현재 모임에 반복 규칙만 저장한다.
+
+```json
+{
+  "recurrence": {
+    "type": "WEEKLY",
+    "customNextMeetingAt": null
+  }
+}
+```
+
+- 현재 모임의 가입 코드와 참여자, 후보, 투표 상태는 바꾸지 않는다.
+- 현재 회차가 최종 확정되면 다음 회차 1개를 자동으로 생성한다.
+- 다음 회차는 현재 가입 코드를 유지한다.
+- `WEEKLY`는 같은 요일·시각, `MONTHLY`는 같은 일자·시각을 사용한다.
+- `CUSTOM`은 현재 회차보다 뒤인 일시를 `customNextMeetingAt`에 보낸다.
+- 완료되었거나 날짜가 지난 모임은 이 API 대신 `다시 만나기` API를 사용한다.
+
+### 7.4 코드로 모임 확인
 
 ```http
 POST /api/v1/meetings/lookup
@@ -710,7 +749,7 @@ POST /api/v1/meetings/lookup
 | `MEETING_FULL` | 정원 초과 |
 | `MEETING_DELETED` | 삭제된 모임 |
 
-### 7.4 모임 가입 또는 재가입
+### 7.5 모임 가입 또는 재가입
 
 ```http
 POST /api/v1/meetings/{meetingId}/join
@@ -746,7 +785,7 @@ POST /api/v1/meetings/{meetingId}/join
 }
 ```
 
-### 7.5 모임 상세
+### 7.6 모임 상세
 
 ```http
 GET /api/v1/meetings/{meetingId}
@@ -781,7 +820,7 @@ GET /api/v1/meetings/{meetingId}
 }
 ```
 
-### 7.6 모임 탈퇴
+### 7.7 모임 탈퇴
 
 ```http
 POST /api/v1/meetings/{meetingId}/leave
@@ -794,7 +833,7 @@ POST /api/v1/meetings/{meetingId}/leave
 
 응답 `204 No Content`.
 
-### 7.7 모임원 내보내기
+### 7.8 모임원 내보내기
 
 ```http
 POST /api/v1/meetings/{meetingId}/members/{memberId}/kick
@@ -818,7 +857,7 @@ POST /api/v1/meetings/{meetingId}/members/{memberId}/kick
 }
 ```
 
-### 7.8 모임 삭제
+### 7.9 모임 삭제
 
 ```http
 DELETE /api/v1/meetings/{meetingId}

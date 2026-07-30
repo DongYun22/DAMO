@@ -20,6 +20,7 @@ import {
   LoginPage,
   MapPage,
   MeetingDetailPage,
+  MeetingRecurrencePage,
   MyPlacesPage,
   NotFoundPage,
   OAuthCallbackPage,
@@ -90,6 +91,10 @@ export function App() {
           <Route
             path="/meetings/:meetingId/repeat"
             element={<RepeatMeetingPage />}
+          />
+          <Route
+            path="/meetings/:meetingId/recurrence"
+            element={<MeetingRecurrencePage />}
           />
           <Route
             path="/meetings/:meetingId/candidates"

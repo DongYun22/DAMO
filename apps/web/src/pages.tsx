@@ -30,6 +30,8 @@ import {
 } from "react";
 import type {
   Candidate,
+  CandidateMeetingTarget,
+  ConfigureMeetingRecurrenceInput,
   CreateMeetingInput,
   EligiblePlace,
   MeetingDetail,
@@ -726,7 +728,7 @@ export function MapPage() {
 }
 
 export function MyPlacesPage() {
-  const { home, showToast } = useShell();
+  const { showToast } = useShell();
   const [items, setItems] = useState<UserPlace[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -735,6 +737,12 @@ export function MyPlacesPage() {
   const [removing, setRemoving] = useState<UserPlace | null>(null);
   const [purpose, setPurpose] = useState<Purpose>("CAFE");
   const [mood, setMood] = useState<Mood>("FUN");
+  const [candidateMeetings, setCandidateMeetings] = useState<
+    CandidateMeetingTarget[]
+  >([]);
+  const [selectedMeetingIds, setSelectedMeetingIds] = useState<string[]>([]);
+  const [selectingMeetings, setSelectingMeetings] = useState(false);
+  const [meetingOptionsLoading, setMeetingOptionsLoading] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -755,23 +763,58 @@ export function MyPlacesPage() {
     setEditing(item);
     setPurpose(item.purpose);
     setMood(item.mood);
+    setCandidateMeetings([]);
+    setSelectedMeetingIds([]);
+    setSelectingMeetings(false);
   };
 
-  const saveEdit = async (apply: boolean) => {
+  const closeEdit = () => {
+    setEditing(null);
+    setSelectingMeetings(false);
+    setCandidateMeetings([]);
+    setSelectedMeetingIds([]);
+  };
+
+  const openMeetingSelection = async () => {
     if (!editing) return;
-    const meetingIds = apply
-      ? home?.ongoingMeetings
-          .filter((meeting) => meeting.status === "RECRUITING")
-          .map((meeting) => meeting.id) ?? []
-      : [];
+    setSelectingMeetings(true);
+    setMeetingOptionsLoading(true);
+    try {
+      const targets = await api<CandidateMeetingTarget[]>(
+        `/me/places/${editing.id}/candidate-meetings`
+      );
+      setCandidateMeetings(targets);
+      setSelectedMeetingIds([]);
+    } catch (reason) {
+      setError(errorMessage(reason));
+      setSelectingMeetings(false);
+    } finally {
+      setMeetingOptionsLoading(false);
+    }
+  };
+
+  const toggleMeetingTarget = (meetingId: string) => {
+    setSelectedMeetingIds((current) =>
+      current.includes(meetingId)
+        ? current.filter((id) => id !== meetingId)
+        : [...current, meetingId]
+    );
+  };
+
+  const saveEdit = async (meetingIds: string[]) => {
+    if (!editing) return;
     try {
       await api(`/me/places/${editing.id}`, {
         method: "PATCH",
         body: JSON.stringify({ purpose, mood, applyToMeetingIds: meetingIds })
       });
-      setEditing(null);
+      closeEdit();
       await load();
-      showToast(apply ? "내 장소와 이번 투표 후보를 변경했어요." : "내 장소만 변경했어요.");
+      showToast(
+        meetingIds.length
+          ? `내 장소와 선택한 모임 ${meetingIds.length}개의 후보를 변경했어요.`
+          : "내 장소만 변경했어요."
+      );
     } catch (reason) {
       setError(errorMessage(reason));
     }
@@ -839,24 +882,89 @@ export function MyPlacesPage() {
 
       <Modal
         open={Boolean(editing)}
-        title="장소 분류 변경"
-        description={editing?.place.name}
-        onClose={() => setEditing(null)}
+        title={selectingMeetings ? "반영할 모임 선택" : "장소 분류 변경"}
+        description={
+          selectingMeetings
+            ? "아직 투표가 시작되지 않았고 이 장소가 후보로 등록된 모임만 보여요."
+            : editing?.place.name
+        }
+        onClose={closeEdit}
       >
-        <PurposeMoodFields
-          purpose={purpose}
-          mood={mood}
-          onPurpose={setPurpose}
-          onMood={setMood}
-        />
-        <div className="modal-actions modal-actions--stack">
-          <SecondaryButton type="button" onClick={() => void saveEdit(false)}>
-            내 장소만 변경
-          </SecondaryButton>
-          <PrimaryButton type="button" onClick={() => void saveEdit(true)}>
-            이번 투표에도 반영
-          </PrimaryButton>
-        </div>
+        {selectingMeetings ? (
+          <>
+            {meetingOptionsLoading ? (
+              <Loading label="반영할 수 있는 모임 확인 중" />
+            ) : candidateMeetings.length ? (
+              <div className="meeting-target-list">
+                {candidateMeetings.map((target) => {
+                  const selected = selectedMeetingIds.includes(target.id);
+                  return (
+                    <button
+                      type="button"
+                      key={target.id}
+                      className={selected ? "is-selected" : ""}
+                      onClick={() => toggleMeetingTarget(target.id)}
+                      aria-pressed={selected}
+                    >
+                      <span>
+                        <strong>{target.name}</strong>
+                        <small>
+                          {formatMeetingAt(target.meetingAt)} ·{" "}
+                          {PURPOSE_LABELS[target.purpose]} ·{" "}
+                          {MOOD_LABELS[target.mood]}
+                        </small>
+                      </span>
+                      {selected ? <Check size={18} /> : null}
+                    </button>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="empty-inline">
+                <strong>반영할 수 있는 모임이 없어요.</strong>
+                <p>이 장소가 후보인 투표 전 모임이 있을 때 선택할 수 있어요.</p>
+              </div>
+            )}
+            <div className="modal-actions modal-actions--stack">
+              <SecondaryButton
+                type="button"
+                onClick={() => setSelectingMeetings(false)}
+              >
+                분류 변경으로 돌아가기
+              </SecondaryButton>
+              <PrimaryButton
+                type="button"
+                disabled={selectedMeetingIds.length === 0}
+                onClick={() => void saveEdit(selectedMeetingIds)}
+              >
+                선택한 모임에 반영
+              </PrimaryButton>
+            </div>
+          </>
+        ) : (
+          <>
+            <PurposeMoodFields
+              purpose={purpose}
+              mood={mood}
+              onPurpose={setPurpose}
+              onMood={setMood}
+            />
+            <div className="modal-actions modal-actions--stack">
+              <SecondaryButton
+                type="button"
+                onClick={() => void saveEdit([])}
+              >
+                내 장소만 변경
+              </SecondaryButton>
+              <PrimaryButton
+                type="button"
+                onClick={() => void openMeetingSelection()}
+              >
+                이번 투표에도 반영
+              </PrimaryButton>
+            </div>
+          </>
+        )}
       </Modal>
 
       <Modal
@@ -884,6 +992,10 @@ const toDateInput = (date: Date) => {
   const day = String(date.getDate()).padStart(2, "0");
   return `${year}-${month}-${day}`;
 };
+
+const MINUTE_OPTIONS = Array.from({ length: 60 }, (_, value) =>
+  String(value).padStart(2, "0")
+);
 
 export function CreateMeetingPage() {
   const navigate = useNavigate();
@@ -1039,7 +1151,7 @@ export function RepeatMeetingPage() {
   const [date, setDate] = useState(defaultDate);
   const [meridiem, setMeridiem] = useState<"AM" | "PM">("PM");
   const [hour, setHour] = useState(7);
-  const [minute, setMinute] = useState<"00" | "30">("30");
+  const [minute, setMinute] = useState("30");
   const [purpose, setPurpose] = useState<Purpose>("MEAL");
   const [mood, setMood] = useState<Mood>("FUN");
   const [selectedMemberIds, setSelectedMemberIds] = useState<string[]>([]);
@@ -1072,7 +1184,7 @@ export function RepeatMeetingPage() {
         const sourceHour = koreaTime.getUTCHours();
         setMeridiem(sourceHour < 12 ? "AM" : "PM");
         setHour(sourceHour % 12 || 12);
-        setMinute(koreaTime.getUTCMinutes() >= 30 ? "30" : "00");
+        setMinute(String(koreaTime.getUTCMinutes()).padStart(2, "0"));
       } catch (reason) {
         setError(errorMessage(reason));
       } finally {
@@ -1267,12 +1379,12 @@ export function RepeatMeetingPage() {
             </select>
             <select
               value={minute}
-              onChange={(event) =>
-                setMinute(event.target.value as "00" | "30")
-              }
+              onChange={(event) => setMinute(event.target.value)}
+              aria-label="분"
             >
-              <option value="00">00분</option>
-              <option value="30">30분</option>
+              {MINUTE_OPTIONS.map((value) => (
+                <option key={value} value={value}>{value}분</option>
+              ))}
             </select>
           </div>
         </fieldset>
@@ -1364,6 +1476,206 @@ export function RepeatMeetingPage() {
         <PrimaryButton type="submit" disabled={submitting}>
           <Repeat2 size={18} />
           {submitting ? "새 회차 만드는 중" : "새 회차 만들기"}
+        </PrimaryButton>
+      </form>
+    </div>
+  );
+}
+
+export function MeetingRecurrencePage() {
+  const { meetingId = "" } = useParams();
+  const navigate = useNavigate();
+  const { refreshHome, showToast } = useShell();
+  const [meeting, setMeeting] = useState<MeetingDetail | null>(null);
+  const [recurrenceType, setRecurrenceType] =
+    useState<RecurrenceType>("WEEKLY");
+  const [customDate, setCustomDate] = useState("");
+  const [meridiem, setMeridiem] = useState<"AM" | "PM">("PM");
+  const [hour, setHour] = useState(7);
+  const [minute, setMinute] = useState("00");
+  const [loading, setLoading] = useState(true);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    const load = async () => {
+      try {
+        const detail = await api<MeetingDetail>(`/meetings/${meetingId}`);
+        setMeeting(detail);
+        setRecurrenceType(detail.recurrence?.type ?? "WEEKLY");
+
+        const source = detail.recurrence?.customNextMeetingAt
+          ? new Date(detail.recurrence.customNextMeetingAt)
+          : new Date(
+              new Date(detail.meetingAt).getTime() +
+                7 * 24 * 60 * 60 * 1000
+            );
+        const koreaTime = new Date(source.getTime() + 9 * 60 * 60 * 1000);
+        setCustomDate(
+          `${koreaTime.getUTCFullYear()}-${String(
+            koreaTime.getUTCMonth() + 1
+          ).padStart(2, "0")}-${String(koreaTime.getUTCDate()).padStart(2, "0")}`
+        );
+        const sourceHour = koreaTime.getUTCHours();
+        setMeridiem(sourceHour < 12 ? "AM" : "PM");
+        setHour(sourceHour % 12 || 12);
+        setMinute(String(koreaTime.getUTCMinutes()).padStart(2, "0"));
+      } catch (reason) {
+        setError(errorMessage(reason));
+      } finally {
+        setLoading(false);
+      }
+    };
+    void load();
+  }, [meetingId]);
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!meeting) return;
+    const hour24 =
+      meridiem === "AM"
+        ? hour === 12
+          ? 0
+          : hour
+        : hour === 12
+          ? 12
+          : hour + 12;
+    const time = `${String(hour24).padStart(2, "0")}:${minute}:00+09:00`;
+    const input: ConfigureMeetingRecurrenceInput = {
+      recurrence: {
+        type: recurrenceType,
+        customNextMeetingAt:
+          recurrenceType === "CUSTOM" ? `${customDate}T${time}` : null
+      }
+    };
+
+    setSubmitting(true);
+    setError("");
+    try {
+      await api(`/meetings/${meetingId}/recurrence`, {
+        method: "PUT",
+        body: JSON.stringify(input)
+      });
+      await refreshHome();
+      showToast("정기 모임 설정을 저장했어요.");
+      navigate(`/meetings/${meetingId}`);
+    } catch (reason) {
+      setError(errorMessage(reason));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  if (loading) return <Loading label="정기 모임 설정 불러오는 중" />;
+  if (!meeting) {
+    return (
+      <div className="page">
+        <ScreenHeader title="정기적으로 만나기" />
+        <InlineError message={error} />
+      </div>
+    );
+  }
+
+  return (
+    <div className="page">
+      <ScreenHeader
+        title="정기적으로 만나기"
+        description="현재 모임은 그대로 두고, 종료 시 같은 가입 코드로 다음 회차를 만들어요."
+      />
+      <form
+        className="form-card meeting-form recurrence-settings-form"
+        onSubmit={submit}
+      >
+        <div className="repeat-code-note">
+          <span>유지되는 가입 코드</span>
+          <strong>{meeting.joinCode}</strong>
+        </div>
+        <div className="recurrence-source-summary">
+          <strong>{meeting.name}</strong>
+          <span>{formatMeetingAt(meeting.meetingAt)}</span>
+          <small>
+            {PURPOSE_LABELS[meeting.purpose]} · {MOOD_LABELS[meeting.mood]} ·
+            정원 {meeting.capacity}명
+          </small>
+        </div>
+
+        <fieldset className="recurrence-options">
+          <legend>반복 주기</legend>
+          <div>
+            {([
+              ["WEEKLY", "매주"],
+              ["MONTHLY", "매달"],
+              ["CUSTOM", "직접 입력"]
+            ] as const).map(([value, label]) => (
+              <button
+                type="button"
+                key={value}
+                className={recurrenceType === value ? "is-selected" : ""}
+                onClick={() => setRecurrenceType(value)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          {recurrenceType === "CUSTOM" ? (
+            <>
+              <label className="field">
+                <span>다음 회차 날짜</span>
+                <input
+                  type="date"
+                  value={customDate}
+                  min={toDateInput(new Date(meeting.meetingAt))}
+                  onChange={(event) => setCustomDate(event.target.value)}
+                  required
+                />
+              </label>
+              <fieldset className="time-field">
+                <legend>다음 회차 시각</legend>
+                <div className="time-grid">
+                  <select
+                    value={meridiem}
+                    onChange={(event) =>
+                      setMeridiem(event.target.value as "AM" | "PM")
+                    }
+                  >
+                    <option value="AM">오전</option>
+                    <option value="PM">오후</option>
+                  </select>
+                  <select
+                    value={hour}
+                    onChange={(event) => setHour(Number(event.target.value))}
+                  >
+                    {Array.from({ length: 12 }, (_, index) => index + 1).map(
+                      (value) => (
+                        <option key={value} value={value}>{value}시</option>
+                      )
+                    )}
+                  </select>
+                  <select
+                    value={minute}
+                    onChange={(event) => setMinute(event.target.value)}
+                    aria-label="분"
+                  >
+                    {MINUTE_OPTIONS.map((value) => (
+                      <option key={value} value={value}>{value}분</option>
+                    ))}
+                  </select>
+                </div>
+              </fieldset>
+            </>
+          ) : (
+            <p>
+              {recurrenceType === "WEEKLY"
+                ? "현재 회차와 같은 요일·시각으로 다음 주 모임을 만들어요."
+                : "현재 회차와 같은 날짜·시각으로 다음 달 모임을 만들어요."}
+            </p>
+          )}
+        </fieldset>
+
+        <InlineError message={error} />
+        <PrimaryButton type="submit" disabled={submitting}>
+          <Repeat2 size={18} />
+          {submitting ? "저장하는 중" : "정기 모임으로 설정"}
         </PrimaryButton>
       </form>
     </div>
@@ -1715,6 +2027,8 @@ export function MeetingDetailPage() {
   }
 
   const isHost = meeting.role === "HOST";
+  const canRepeatMeeting =
+    meeting.status === "COMPLETED" || meeting.isPastDue;
 
   const copyInvite = async () => {
     const shareUrl = `${window.location.origin}/meetings/join?meetingId=${meetingId}`;
@@ -1924,14 +2238,21 @@ export function MeetingDetailPage() {
         description="삭제는 되돌릴 수 없으므로 메뉴 안에 작게 배치했어요."
         onClose={() => setMenuOpen(false)}
       >
-        {meeting.status === "COMPLETED" ? (
+        {canRepeatMeeting ? (
           <SecondaryButton
             type="button"
             onClick={() => navigate(`/meetings/${meetingId}/repeat`)}
           >
             <Plus size={18} /> 다시 만나기
           </SecondaryButton>
-        ) : null}
+        ) : (
+          <SecondaryButton
+            type="button"
+            onClick={() => navigate(`/meetings/${meetingId}/recurrence`)}
+          >
+            <Repeat2 size={18} /> 정기적으로 만나기
+          </SecondaryButton>
+        )}
         <SecondaryButton
           type="button"
           className="button--danger-text"

@@ -335,6 +335,24 @@ paths:
         "422":
           $ref: "#/components/responses/UnprocessableEntity"
 
+  /me/places/{userPlaceId}/candidate-meetings:
+    get:
+      tags: [MyPlaces]
+      operationId: listMyPlaceCandidateMeetings
+      summary: 내 장소 변경을 반영할 수 있는 투표 전 모임 조회
+      description: 사용자가 활성 참여 중이고 해당 장소를 자신의 후보로 등록한 RECRUITING 모임만 반환합니다.
+      parameters:
+        - $ref: "#/components/parameters/UserPlaceId"
+      responses:
+        "200":
+          description: 복수선택 가능한 모임 목록
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CandidateMeetingTargetListResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
   /me/places/{userPlaceId}/unregister:
     post:
       tags: [MyPlaces]
@@ -447,8 +465,8 @@ paths:
     post:
       tags: [Meetings]
       operationId: repeatMeeting
-      summary: 완료된 모임에서 새 회차 생성
-      description: 기존 기록은 보존하고 기본 정보·가입 코드·선택한 모임원을 이어받은 새 회차를 생성합니다.
+      summary: 완료되었거나 날짜가 지난 모임에서 새 회차 생성
+      description: 기존 기록은 보존하고 기본 정보·가입 코드·선택한 모임원을 이어받은 새 회차를 생성합니다. 새 날짜의 기본값은 요청 시점에서 7일 뒤입니다.
       parameters:
         - $ref: "#/components/parameters/MeetingId"
         - $ref: "#/components/parameters/IdempotencyKey"
@@ -461,6 +479,34 @@ paths:
       responses:
         "201":
           description: 새 회차 생성 성공
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeetingDetailResponse"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+  /meetings/{meetingId}/recurrence:
+    put:
+      tags: [Meetings]
+      operationId: configureMeetingRecurrence
+      summary: 진행 중 모임을 정기 모임으로 설정
+      description: 새 회차를 즉시 만들지 않고 현재 모임에 반복 규칙을 저장합니다. 다음 회차는 현재 회차 완료 시 같은 가입 코드로 생성됩니다.
+      parameters:
+        - $ref: "#/components/parameters/MeetingId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ConfigureMeetingRecurrenceRequest"
+      responses:
+        "200":
+          description: 정기 모임 설정이 반영된 현재 모임
           content:
             application/json:
               schema:
@@ -1073,6 +1119,33 @@ components:
           type: string
           maxLength: 20
 
+    CandidateMeetingTarget:
+      type: object
+      required: [id, name, meetingAt, purpose, mood]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          maxLength: 20
+        meetingAt:
+          type: string
+          format: date-time
+        purpose:
+          $ref: "#/components/schemas/Purpose"
+        mood:
+          $ref: "#/components/schemas/Mood"
+
+    CandidateMeetingTargetListResponse:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/CandidateMeetingTarget"
+
     MyPlace:
       type: object
       required: [id, place, purpose, mood, usedByRecruitingMeetings]
@@ -1332,7 +1405,7 @@ components:
         meetingAt:
           type: string
           format: date-time
-          description: 새 회차 일정. Asia/Seoul 기준이며 분은 00 또는 30
+          description: 새 회차 일정. Asia/Seoul 기준이며 분은 00부터 59까지 선택 가능
         purpose:
           $ref: "#/components/schemas/Purpose"
         mood:
@@ -1359,6 +1432,29 @@ components:
                       format: date-time
                     - type: "null"
             - type: "null"
+
+    MeetingRecurrence:
+      type: object
+      additionalProperties: false
+      required: [type]
+      properties:
+        type:
+          type: string
+          enum: [WEEKLY, MONTHLY, CUSTOM]
+        customNextMeetingAt:
+          oneOf:
+            - type: string
+              format: date-time
+            - type: "null"
+          description: CUSTOM일 때 필수이며 현재 회차보다 뒤인 일시
+
+    ConfigureMeetingRecurrenceRequest:
+      type: object
+      additionalProperties: false
+      required: [recurrence]
+      properties:
+        recurrence:
+          $ref: "#/components/schemas/MeetingRecurrence"
 
     MeetingCreated:
       type: object

@@ -1988,7 +1988,59 @@ export class PostgresStore {
   }
 
   async leaveMeeting(meetingId: string, userId: string) {
-    return this.write((store) => store.leaveMeeting(meetingId, userId));
+    return this.withMeetingLock(meetingId, async (client) => {
+      const meetingResult = await client.query<{ status: MeetingStatus }>(
+        `select status from meetings where id = $1 and status <> 'DELETED'`,
+        [meetingId]
+      );
+      const meeting = meetingResult.rows[0];
+      if (!meeting) {
+        throw new StoreError(404, "MEETING_NOT_FOUND", "모임을 찾을 수 없습니다.");
+      }
+      if (meeting.status !== "RECRUITING") {
+        throw new StoreError(409, "LEAVE_NOT_ALLOWED", "투표 시작 후에는 탈퇴할 수 없습니다.");
+      }
+
+      const memberResult = await client.query<{ id: string; role: "HOST" | "MEMBER" }>(
+        `
+          select id, role
+          from meeting_members
+          where meeting_id = $1 and user_id = $2 and status = 'ACTIVE'
+        `,
+        [meetingId, userId]
+      );
+      const member = memberResult.rows[0];
+      if (!member) {
+        throw new StoreError(404, "MEMBER_NOT_FOUND", "모임 참여 정보를 찾을 수 없습니다.");
+      }
+      if (member.role === "HOST") {
+        throw new StoreError(403, "HOST_CANNOT_LEAVE", "모임장은 탈퇴 대신 모임을 삭제해야 합니다.");
+      }
+
+      await client.query(`update meeting_members set status = 'LEFT' where id = $1`, [member.id]);
+      await client.query(
+        `
+          delete from candidate_recommendations recommendation
+          using meeting_candidates candidate
+          where recommendation.candidate_id = candidate.id
+            and candidate.meeting_id = $1
+            and recommendation.member_id = $2
+        `,
+        [meetingId, member.id]
+      );
+      await client.query(
+        `
+          delete from meeting_candidates candidate
+          where candidate.meeting_id = $1
+            and not exists (
+              select 1 from candidate_recommendations r where r.candidate_id = candidate.id
+            )
+        `,
+        [meetingId]
+      );
+      await client.query(`update meetings set updated_at = now() where id = $1`, [meetingId]);
+      return { meetingId, left: true };
+    });
   }
 
   async kickMember(meetingId: string, hostUserId: string, memberId: string) {

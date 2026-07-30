@@ -916,6 +916,30 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
     );
   });
 
+  it("lets an active member leave and rejects the host", async () => {
+    const host = await store.signup("host-leave", "호스트", "pw1234");
+    const guest = await store.signup("guest-leave", "게스트", "pw1234");
+    const meeting = await store.createMeeting(host.user.id, {
+      name: "탈퇴 테스트",
+      capacity: 3,
+      meetingAt: "2026-08-01T10:00:00+09:00",
+      purpose: "STUDY",
+      mood: "QUIET"
+    });
+    await store.joinMeeting(guest.user.id, meeting.id, meeting.joinCode!, "게스트닉");
+
+    await assert.rejects(
+      () => store.leaveMeeting(meeting.id, host.user.id),
+      (error: unknown) => (error as { code?: string }).code === "HOST_CANNOT_LEAVE"
+    );
+
+    const result = await store.leaveMeeting(meeting.id, guest.user.id);
+    assert.equal(result.left, true);
+
+    const detail = await store.detail(meeting.id, host.user.id);
+    assert.equal(detail.members.length, 1);
+  });
+
   it("joins a meeting, rejects wrong codes, and enforces capacity", async () => {
     const host = await store.signup("host-join", "호스트", "pw1234");
     const guest = await store.signup("guest-join", "게스트", "pw1234");

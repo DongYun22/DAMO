@@ -1926,9 +1926,160 @@ export class PostgresStore {
     userId: string,
     input: RepeatMeetingInput
   ) {
-    return this.write((store) =>
-      store.repeatMeeting(sourceMeetingId, userId, input)
-    );
+    const newMeetingId = await this.withMeetingLock(sourceMeetingId, async (client) => {
+      const sourceResult = await client.query<{
+        hostUserId: string;
+        status: MeetingStatus;
+        joinCode: string;
+        seriesId: string | null;
+        nextMeetingId: string | null;
+      }>(
+        `
+          select
+            host_user_id as "hostUserId", status, join_code as "joinCode",
+            series_id as "seriesId", next_meeting_id as "nextMeetingId"
+          from meetings
+          where id = $1 and status <> 'DELETED'
+        `,
+        [sourceMeetingId]
+      );
+      const source = sourceResult.rows[0];
+      if (!source) {
+        throw new StoreError(404, "MEETING_NOT_FOUND", "모임을 찾을 수 없습니다.");
+      }
+      if (source.hostUserId !== userId) {
+        throw new StoreError(403, "HOST_ONLY", "모임장만 실행할 수 있습니다.");
+      }
+      if (source.status !== "COMPLETED") {
+        throw new StoreError(409, "MEETING_NOT_COMPLETED", "완료된 모임에서만 다시 만나기를 시작할 수 있습니다.");
+      }
+      if (source.nextMeetingId) {
+        throw new StoreError(
+          409,
+          "NEXT_MEETING_ALREADY_EXISTS",
+          "이미 다음 회차가 만들어져 있습니다.",
+          { meetingId: source.nextMeetingId }
+        );
+      }
+
+      const memberResult = await client.query<{
+        id: string;
+        userId: string;
+        meetingNickname: string;
+        role: "HOST" | "MEMBER";
+      }>(
+        `
+          select id, user_id as "userId", meeting_nickname as "meetingNickname", role
+          from meeting_members
+          where meeting_id = $1 and status = 'ACTIVE'
+        `,
+        [sourceMeetingId]
+      );
+      const sourceMembers = memberResult.rows;
+      const selectedIds = new Set(input.memberIds);
+      const selectedMembers = sourceMembers.filter((member) => selectedIds.has(member.id));
+      const hostMember = sourceMembers.find((member) => member.role === "HOST");
+      if (!hostMember || !selectedIds.has(hostMember.id)) {
+        throw new StoreError(422, "HOST_MEMBER_REQUIRED", "모임장은 다음 회차에 반드시 포함되어야 합니다.");
+      }
+      if (selectedMembers.length !== selectedIds.size) {
+        throw new StoreError(422, "INVALID_MEMBER_SELECTION", "이전 모임에 참여한 모임원만 선택할 수 있습니다.");
+      }
+      if (selectedMembers.length > input.capacity) {
+        throw new StoreError(422, "CAPACITY_TOO_SMALL", "선택한 모임원 수보다 정원을 작게 설정할 수 없습니다.");
+      }
+      if (
+        input.recurrence?.type === "CUSTOM" &&
+        (!input.recurrence.customNextMeetingAt ||
+          new Date(input.recurrence.customNextMeetingAt).getTime() <=
+            new Date(input.meetingAt).getTime())
+      ) {
+        throw new StoreError(
+          422,
+          "INVALID_CUSTOM_RECURRENCE_DATE",
+          "직접 입력한 다음 일정은 이번 회차보다 뒤여야 합니다."
+        );
+      }
+
+      const seriesId = source.seriesId ?? sourceMeetingId;
+
+      // Reuses the source's join_code (same continuity intent as
+      // createNextRecurringOccurrence). The source is already COMPLETED
+      // (checked above), so it's outside meetings_active_join_code_unique's
+      // predicate — but an unrelated active meeting could coincidentally
+      // hold the same code, so retry with a fresh random code on collision,
+      // same savepoint pattern as createMeeting/createNextRecurringOccurrence.
+      let newId = "";
+      let inserted = false;
+      for (let attempt = 0; attempt < 50 && !inserted; attempt += 1) {
+        const candidateId = randomUUID();
+        const joinCode = attempt === 0 ? source.joinCode : this.randomJoinCodeCandidate();
+        await client.query("savepoint repeat_meeting_join_code_attempt");
+        try {
+          await client.query(
+            `
+              insert into meetings (
+                id, name, host_user_id, capacity, meeting_at, purpose, mood,
+                join_code, status, series_id, parent_meeting_id,
+                recurrence_type, recurrence_next_at
+              )
+              values (
+                $1, $2, $3, $4, $5, $6, $7, $8, 'RECRUITING', $9, $10, $11, $12
+              )
+            `,
+            [
+              candidateId,
+              input.name,
+              source.hostUserId,
+              input.capacity,
+              input.meetingAt,
+              input.purpose,
+              input.mood,
+              joinCode,
+              seriesId,
+              sourceMeetingId,
+              input.recurrence?.type ?? null,
+              input.recurrence?.customNextMeetingAt ?? null
+            ]
+          );
+          newId = candidateId;
+          inserted = true;
+        } catch (error) {
+          if (
+            typeof error === "object" &&
+            error !== null &&
+            "code" in error &&
+            error.code === "23505"
+          ) {
+            await client.query("rollback to savepoint repeat_meeting_join_code_attempt");
+            continue;
+          }
+          throw error;
+        }
+      }
+      if (!inserted) {
+        throw new StoreError(500, "JOIN_CODE_EXHAUSTED", "가입 코드를 발급할 수 없습니다.");
+      }
+
+      for (const member of selectedMembers) {
+        await client.query(
+          `
+            insert into meeting_members (id, meeting_id, user_id, meeting_nickname, role, status)
+            values ($1, $2, $3, $4, $5, 'ACTIVE')
+          `,
+          [randomUUID(), newId, member.userId, member.meetingNickname, member.role]
+        );
+      }
+
+      await client.query(
+        `update meetings set next_meeting_id = $2, updated_at = now() where id = $1`,
+        [sourceMeetingId, newId]
+      );
+
+      return newId;
+    });
+
+    return this.detail(newMeetingId, userId);
   }
 
   async lookupMeeting(joinCode: string) {

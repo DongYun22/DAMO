@@ -1824,4 +1824,192 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
     const meetingAfter = await store.detail(meeting.id, host.user.id);
     assert.equal(meetingAfter.status, "VOTING");
   });
+
+  it("repeatMeeting creates a RECRUITING next meeting sharing the join code, and rejects every invalid call", async () => {
+    const host = await store.signup("host-repeat", "호스트", "pw1234");
+    const guest = await store.signup("guest-repeat", "게스트", "pw1234");
+    const meetingA = await store.createMeeting(host.user.id, {
+      name: "다시 만나기 1회차",
+      capacity: 2,
+      meetingAt: "2026-08-01T10:00:00+09:00",
+      purpose: "CAFE",
+      mood: "QUIET"
+    });
+    await store.joinMeeting(guest.user.id, meetingA.id, meetingA.joinCode!, "게스트닉");
+
+    const [placeA] = await store.upsertPlaces([
+      {
+        id: "place-repeat-a",
+        naverPlaceId: "naver-repeat-a",
+        name: "가카페",
+        category: "카페",
+        address: "서울",
+        roadAddress: "서울",
+        latitude: 37.5,
+        longitude: 127.0,
+        station: "강남",
+        distanceText: "1분"
+      }
+    ]);
+    const [placeB] = await store.upsertPlaces([
+      {
+        id: "place-repeat-b",
+        naverPlaceId: "naver-repeat-b",
+        name: "나카페",
+        category: "카페",
+        address: "서울",
+        roadAddress: "서울",
+        latitude: 37.6,
+        longitude: 127.1,
+        station: "역삼",
+        distanceText: "2분"
+      }
+    ]);
+    const hostPlace = await store.registerUserPlace(host.user.id, placeA!.naverPlaceId, "CAFE", "QUIET");
+    const guestPlace = await store.registerUserPlace(guest.user.id, placeB!.naverPlaceId, "CAFE", "QUIET");
+    await store.replaceMyCandidates(meetingA.id, host.user.id, [hostPlace.id]);
+    await store.replaceMyCandidates(meetingA.id, guest.user.id, [guestPlace.id]);
+    await store.createVote(meetingA.id, host.user.id);
+
+    const hostSession = await store.voteSession(meetingA.id, host.user.id);
+    const hostChoiceId = hostSession.round!.candidateA.id;
+    await store.saveChoice(meetingA.id, host.user.id, 1, hostChoiceId);
+
+    // --- MEETING_NOT_COMPLETED: meetingA is still VOTING (the guest hasn't
+    // saved their choice yet), so repeatMeeting must reject before checking
+    // anything about member selection. ---
+    await assert.rejects(
+      () =>
+        store.repeatMeeting(meetingA.id, host.user.id, {
+          name: "다시 만나기 2회차",
+          capacity: 5,
+          meetingAt: "2026-08-08T10:00:00+09:00",
+          purpose: "CAFE",
+          mood: "QUIET",
+          memberIds: []
+        }),
+      (error: unknown) => (error as { code?: string }).code === "MEETING_NOT_COMPLETED"
+    );
+
+    const guestSession = await store.voteSession(meetingA.id, guest.user.id);
+    const guestChoiceId =
+      guestSession.round!.candidateA.id === hostChoiceId
+        ? guestSession.round!.candidateA.id
+        : guestSession.round!.candidateB.id;
+    await store.saveChoice(meetingA.id, guest.user.id, 1, guestChoiceId);
+
+    const closeResults = await store.closeVote(meetingA.id, host.user.id, false);
+    assert.equal(closeResults.meetingStatus, "COMPLETED");
+
+    const detailA = await store.detail(meetingA.id, host.user.id);
+    const hostMemberA = detailA.members.find((member) => member.role === "HOST")!;
+    const guestMemberA = detailA.members.find((member) => member.role === "MEMBER")!;
+
+    // --- HOST_ONLY: the guest is not the host of meetingA. ---
+    await assert.rejects(
+      () =>
+        store.repeatMeeting(meetingA.id, guest.user.id, {
+          name: "다시 만나기 2회차",
+          capacity: 5,
+          meetingAt: "2026-08-08T10:00:00+09:00",
+          purpose: "CAFE",
+          mood: "QUIET",
+          memberIds: [hostMemberA.id, guestMemberA.id]
+        }),
+      (error: unknown) => (error as { code?: string }).code === "HOST_ONLY"
+    );
+
+    // --- HOST_MEMBER_REQUIRED: memberIds excludes the host. ---
+    await assert.rejects(
+      () =>
+        store.repeatMeeting(meetingA.id, host.user.id, {
+          name: "다시 만나기 2회차",
+          capacity: 5,
+          meetingAt: "2026-08-08T10:00:00+09:00",
+          purpose: "CAFE",
+          mood: "QUIET",
+          memberIds: [guestMemberA.id]
+        }),
+      (error: unknown) => (error as { code?: string }).code === "HOST_MEMBER_REQUIRED"
+    );
+
+    // --- INVALID_MEMBER_SELECTION: memberIds includes an id that was never
+    // an active member of meetingA. ---
+    await assert.rejects(
+      () =>
+        store.repeatMeeting(meetingA.id, host.user.id, {
+          name: "다시 만나기 2회차",
+          capacity: 5,
+          meetingAt: "2026-08-08T10:00:00+09:00",
+          purpose: "CAFE",
+          mood: "QUIET",
+          memberIds: [hostMemberA.id, "00000000-0000-0000-0000-000000000000"]
+        }),
+      (error: unknown) => (error as { code?: string }).code === "INVALID_MEMBER_SELECTION"
+    );
+
+    // --- CAPACITY_TOO_SMALL: two members selected, capacity of 1. ---
+    await assert.rejects(
+      () =>
+        store.repeatMeeting(meetingA.id, host.user.id, {
+          name: "다시 만나기 2회차",
+          capacity: 1,
+          meetingAt: "2026-08-08T10:00:00+09:00",
+          purpose: "CAFE",
+          mood: "QUIET",
+          memberIds: [hostMemberA.id, guestMemberA.id]
+        }),
+      (error: unknown) => (error as { code?: string }).code === "CAPACITY_TOO_SMALL"
+    );
+
+    // --- INVALID_CUSTOM_RECURRENCE_DATE: the custom next-meeting date isn't
+    // after the new meeting's own meetingAt. ---
+    await assert.rejects(
+      () =>
+        store.repeatMeeting(meetingA.id, host.user.id, {
+          name: "다시 만나기 2회차",
+          capacity: 5,
+          meetingAt: "2026-08-08T10:00:00+09:00",
+          purpose: "CAFE",
+          mood: "QUIET",
+          memberIds: [hostMemberA.id, guestMemberA.id],
+          recurrence: { type: "CUSTOM", customNextMeetingAt: "2026-08-08T10:00:00+09:00" }
+        }),
+      (error: unknown) => (error as { code?: string }).code === "INVALID_CUSTOM_RECURRENCE_DATE"
+    );
+
+    // --- The actual successful repeat: both members selected, no recurrence. ---
+    const meetingB = await store.repeatMeeting(meetingA.id, host.user.id, {
+      name: "다시 만나기 2회차",
+      capacity: 5,
+      meetingAt: "2026-08-08T10:00:00+09:00",
+      purpose: "CAFE",
+      mood: "QUIET",
+      memberIds: [hostMemberA.id, guestMemberA.id]
+    });
+    assert.equal(meetingB.status, "RECRUITING");
+    assert.equal(meetingB.joinCode, meetingA.joinCode);
+    assert.equal(meetingB.parentMeetingId, meetingA.id);
+    assert.equal(meetingB.members.length, 2);
+    assert.ok(meetingB.members.every((member) => member.status === "ACTIVE"));
+    const hostMemberB = meetingB.members.find((member) => member.role === "HOST")!;
+    const guestMemberB = meetingB.members.find((member) => member.role === "MEMBER")!;
+    assert.equal(hostMemberB.userId, host.user.id);
+    assert.equal(guestMemberB.userId, guest.user.id);
+
+    // --- NEXT_MEETING_ALREADY_EXISTS: meetingA already has a next meeting
+    // now (meetingB), so repeating it again must be rejected. ---
+    await assert.rejects(
+      () =>
+        store.repeatMeeting(meetingA.id, host.user.id, {
+          name: "다시 만나기 3회차",
+          capacity: 5,
+          meetingAt: "2026-08-15T10:00:00+09:00",
+          purpose: "CAFE",
+          mood: "QUIET",
+          memberIds: [hostMemberA.id, guestMemberA.id]
+        }),
+      (error: unknown) => (error as { code?: string }).code === "NEXT_MEETING_ALREADY_EXISTS"
+    );
+  });
 });

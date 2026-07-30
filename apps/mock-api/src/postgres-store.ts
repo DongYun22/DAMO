@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import { compare, hash } from "bcryptjs";
 import type {
   Candidate,
+  CandidateMeetingTarget,
+  ConfigureMeetingRecurrenceInput,
   CreateMeetingInput,
   EligiblePlace,
   HomeData,
@@ -1475,6 +1477,68 @@ export class PostgresStore {
     return this.queryUserPlaces(userId);
   }
 
+  async candidateMeetingTargets(
+    userId: string,
+    userPlaceId: string
+  ): Promise<CandidateMeetingTarget[]> {
+    const ownedPlace = await this.pool.query(
+      `
+        select 1
+        from user_places
+        where id = $1 and user_id = $2 and is_active = true
+      `,
+      [userPlaceId, userId]
+    );
+    if (ownedPlace.rowCount === 0) {
+      throw new StoreError(
+        404,
+        "USER_PLACE_NOT_FOUND",
+        "저장된 장소를 찾을 수 없습니다."
+      );
+    }
+
+    const result = await this.pool.query<{
+      id: string;
+      name: string;
+      meetingAt: Date | string;
+      purpose: Purpose;
+      mood: Mood;
+    }>(
+      `
+        select distinct
+          meeting.id,
+          meeting.name,
+          meeting.meeting_at as "meetingAt",
+          meeting.purpose,
+          meeting.mood
+        from user_places user_place
+        join meeting_members member
+          on member.user_id = user_place.user_id
+          and member.status = 'ACTIVE'
+        join candidate_recommendations recommendation
+          on recommendation.member_id = member.id
+          and recommendation.user_place_id = user_place.id
+        join meeting_candidates candidate
+          on candidate.id = recommendation.candidate_id
+          and candidate.meeting_id = member.meeting_id
+          and candidate.place_id = user_place.place_id
+        join meetings meeting
+          on meeting.id = member.meeting_id
+          and meeting.status = 'RECRUITING'
+          and meeting.deleted_at is null
+        where user_place.id = $1
+          and user_place.user_id = $2
+          and user_place.is_active = true
+        order by meeting.meeting_at
+      `,
+      [userPlaceId, userId]
+    );
+    return result.rows.map((row) => ({
+      ...row,
+      meetingAt: timestamp(row.meetingAt)
+    }));
+  }
+
   async registerUserPlace(
     userId: string,
     naverPlaceId: string,
@@ -2063,6 +2127,97 @@ export class PostgresStore {
     });
 
     return this.detail(newMeetingId, userId);
+  }
+
+  async configureMeetingRecurrence(
+    meetingId: string,
+    userId: string,
+    input: ConfigureMeetingRecurrenceInput
+  ) {
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      const result = await client.query<{
+        hostUserId: string;
+        status: MeetingStatus;
+        meetingAt: Date | string;
+      }>(
+        `
+          select
+            host_user_id as "hostUserId",
+            status,
+            meeting_at as "meetingAt"
+          from meetings
+          where id = $1 and deleted_at is null
+          for update
+        `,
+        [meetingId]
+      );
+      const meeting = result.rows[0];
+      if (!meeting) {
+        throw new StoreError(
+          404,
+          "MEETING_NOT_FOUND",
+          "모임을 찾을 수 없습니다."
+        );
+      }
+      if (meeting.hostUserId !== userId) {
+        throw new StoreError(
+          403,
+          "HOST_ONLY",
+          "모임장만 실행할 수 있습니다."
+        );
+      }
+      const meetingAt = timestamp(meeting.meetingAt);
+      if (
+        meeting.status === "COMPLETED" ||
+        new Date(meetingAt).getTime() < Date.now()
+      ) {
+        throw new StoreError(
+          409,
+          "MEETING_ALREADY_FINISHED",
+          "완료된 모임은 다시 만나기로 새 회차를 만들어 주세요."
+        );
+      }
+      if (
+        input.recurrence.type === "CUSTOM" &&
+        (!input.recurrence.customNextMeetingAt ||
+          new Date(input.recurrence.customNextMeetingAt).getTime() <=
+            new Date(meetingAt).getTime())
+      ) {
+        throw new StoreError(
+          422,
+          "INVALID_CUSTOM_RECURRENCE_DATE",
+          "직접 입력한 다음 일정은 현재 회차보다 뒤여야 합니다."
+        );
+      }
+
+      await client.query(
+        `
+          update meetings
+          set
+            series_id = coalesce(series_id, id),
+            recurrence_type = $2,
+            recurrence_next_at = $3,
+            updated_at = now()
+          where id = $1
+        `,
+        [
+          meetingId,
+          input.recurrence.type,
+          input.recurrence.type === "CUSTOM"
+            ? input.recurrence.customNextMeetingAt
+            : null
+        ]
+      );
+      await client.query("commit");
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
+    return this.detail(meetingId, userId);
   }
 
   async lookupMeeting(joinCode: string) {

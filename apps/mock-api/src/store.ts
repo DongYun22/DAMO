@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import { webBaseUrl } from "./config.js";
 import type {
   Candidate,
+  CandidateMeetingTarget,
+  ConfigureMeetingRecurrenceInput,
   CreateMeetingInput,
   HomeData,
   MeetingDetail,
@@ -658,6 +660,50 @@ export class MockStore {
     );
   }
 
+  candidateMeetingTargets(
+    userId: string,
+    userPlaceId: string
+  ): CandidateMeetingTarget[] {
+    const item = this.userPlaces.find(
+      (userPlace) =>
+        userPlace.id === userPlaceId &&
+        userPlace.userId === userId &&
+        userPlace.isActive
+    );
+    if (!item) {
+      throw new StoreError(
+        404,
+        "USER_PLACE_NOT_FOUND",
+        "저장된 장소를 찾을 수 없습니다."
+      );
+    }
+
+    return this.meetings
+      .filter((meeting) => {
+        if (meeting.status !== "RECRUITING" || meeting.deletedAt) return false;
+        const member = this.activeMember(meeting.id, userId);
+        if (!member) return false;
+        return this.candidates.some(
+          (candidate) =>
+            candidate.meetingId === meeting.id &&
+            candidate.placeId === item.place.id &&
+            candidate.recommendations.some(
+              (recommendation) =>
+                recommendation.memberId === member.id &&
+                recommendation.userPlaceId === userPlaceId
+            )
+        );
+      })
+      .map((meeting) => ({
+        id: meeting.id,
+        name: meeting.name,
+        meetingAt: meeting.meetingAt,
+        purpose: meeting.purpose,
+        mood: meeting.mood
+      }))
+      .sort((a, b) => a.meetingAt.localeCompare(b.meetingAt));
+  }
+
   registerUserPlace(userId: string, naverPlaceId: string, purpose: Purpose, mood: Mood) {
     const place = this.getPlace(naverPlaceId);
     const existing = this.userPlaces.find(
@@ -793,11 +839,14 @@ export class MockStore {
     input: RepeatMeetingInput
   ): MeetingDetail {
     const source = this.requireHost(sourceMeetingId, userId);
-    if (source.status !== "COMPLETED") {
+    if (
+      source.status !== "COMPLETED" &&
+      new Date(source.meetingAt).getTime() >= Date.now()
+    ) {
       throw new StoreError(
         409,
         "MEETING_NOT_COMPLETED",
-        "완료된 모임에서만 다시 만나기를 시작할 수 있습니다."
+        "완료되었거나 날짜가 지난 모임에서만 다시 만나기를 시작할 수 있습니다."
       );
     }
     if (source.nextMeetingId) {
@@ -855,6 +904,45 @@ export class MockStore {
     );
     source.nextMeetingId = meeting.id;
     source.updatedAt = now();
+    return this.detail(meeting.id, userId);
+  }
+
+  configureMeetingRecurrence(
+    meetingId: string,
+    userId: string,
+    input: ConfigureMeetingRecurrenceInput
+  ): MeetingDetail {
+    const meeting = this.requireHost(meetingId, userId);
+    if (
+      meeting.status === "COMPLETED" ||
+      new Date(meeting.meetingAt).getTime() < Date.now()
+    ) {
+      throw new StoreError(
+        409,
+        "MEETING_ALREADY_FINISHED",
+        "완료된 모임은 다시 만나기로 새 회차를 만들어 주세요."
+      );
+    }
+    if (
+      input.recurrence.type === "CUSTOM" &&
+      (!input.recurrence.customNextMeetingAt ||
+        new Date(input.recurrence.customNextMeetingAt).getTime() <=
+          new Date(meeting.meetingAt).getTime())
+    ) {
+      throw new StoreError(
+        422,
+        "INVALID_CUSTOM_RECURRENCE_DATE",
+        "직접 입력한 다음 일정은 현재 회차보다 뒤여야 합니다."
+      );
+    }
+
+    meeting.seriesId ??= meeting.id;
+    meeting.recurrenceType = input.recurrence.type;
+    meeting.recurrenceNextAt =
+      input.recurrence.type === "CUSTOM"
+        ? input.recurrence.customNextMeetingAt ?? null
+        : null;
+    meeting.updatedAt = now();
     return this.detail(meeting.id, userId);
   }
 

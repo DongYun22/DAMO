@@ -27,11 +27,11 @@ declare global {
 
 const purposeSchema = z.enum(["STUDY", "CAFE", "MEAL", "DRINK"]);
 const moodSchema = z.enum(["FUN", "QUIET", "BUSINESS", "TIPSY"]);
-const recurrenceSchema = z
-  .object({
-    type: z.enum(["WEEKLY", "MONTHLY", "CUSTOM"]),
-    customNextMeetingAt: z.string().datetime({ offset: true }).nullable().optional()
-  })
+const requiredRecurrenceSchema = z.object({
+  type: z.enum(["WEEKLY", "MONTHLY", "CUSTOM"]),
+  customNextMeetingAt: z.string().datetime({ offset: true }).nullable().optional()
+});
+const recurrenceSchema = requiredRecurrenceSchema
   .nullable()
   .optional();
 
@@ -500,6 +500,20 @@ app.post(
   })
 );
 
+app.get(
+  "/api/v1/me/places/:userPlaceId/candidate-meetings",
+  auth,
+  asyncRoute(async (req, res) =>
+    ok(
+      res,
+      await store.candidateMeetingTargets(
+        req.userId!,
+        pathParam(req, "userPlaceId")
+      )
+    )
+  )
+);
+
 app.post(
   "/api/v1/meetings/:meetingId/repeat",
   auth,
@@ -523,6 +537,24 @@ app.post(
         body
       ),
       201
+    );
+  })
+);
+
+app.put(
+  "/api/v1/meetings/:meetingId/recurrence",
+  auth,
+  asyncRoute(async (req, res) => {
+    const body = z
+      .object({ recurrence: requiredRecurrenceSchema })
+      .parse(req.body);
+    return ok(
+      res,
+      await store.configureMeetingRecurrence(
+        pathParam(req, "meetingId"),
+        req.userId!,
+        body
+      )
     );
   })
 );

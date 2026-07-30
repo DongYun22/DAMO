@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { after, before, beforeEach, describe, it, mock } from "node:test";
+import { Client } from "pg";
 import { PostgresStore } from "./postgres-store.js";
 
 const testDatabaseUrl = process.env.TEST_DATABASE_URL;
@@ -1729,5 +1730,98 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
     const candidatesAfter = await store.publicCandidates(meeting.id, host.user.id);
     assert.equal(candidatesAfter.length, 1);
     assert.equal(meetingAfter.updatedAt, meetingBefore.updatedAt);
+  });
+
+  it("skips a meeting's candidate cleanup via the post-lock recheck when the meeting leaves RECRUITING while unregisterUserPlace is blocked on that meeting's advisory lock", async () => {
+    // unregisterUserPlace's affected-meeting SELECT (RECRUITING + caller
+    // ACTIVE) runs BEFORE any advisory lock is taken; the per-meeting
+    // candidate/recommendation cleanup runs AFTER the lock. A meeting that
+    // transitions out of RECRUITING in that window must be re-verified and
+    // skipped, not blindly cleaned up (see postgres-store.ts, the recheck
+    // query right before the per-meeting delete queries in
+    // unregisterUserPlace).
+    //
+    // That window can't be produced by sequential calls within a single
+    // connection — the initial SELECT and the recheck would always see the
+    // same committed state. So this test drives real Postgres concurrency:
+    // a second raw connection holds the meeting's advisory lock *before*
+    // unregisterUserPlace starts, forcing the store's own lock-acquisition
+    // loop to block after its SELECT has already found the meeting RECRUITING.
+    // While blocked, the second connection flips the meeting to VOTING and
+    // releases the lock by committing — so when unregisterUserPlace finally
+    // acquires the lock and runs its recheck, it must see VOTING and skip.
+    const host = await store.signup("host-unregister-race", "호스트", "pw1234");
+    const meeting = await store.createMeeting(host.user.id, {
+      name: "등록해제 경합 테스트",
+      capacity: 2,
+      meetingAt: "2026-08-01T10:00:00+09:00",
+      purpose: "DRINK",
+      mood: "TIPSY"
+    });
+    const [place] = await store.upsertPlaces([
+      {
+        id: "place-unregister-race-a",
+        naverPlaceId: "naver-unregister-race-a",
+        name: "사호프",
+        category: "호프",
+        address: "서울",
+        roadAddress: "서울",
+        latitude: 37.5,
+        longitude: 127.0,
+        station: "강남",
+        distanceText: "1분"
+      }
+    ]);
+    const hostPlace = await store.registerUserPlace(host.user.id, place!.naverPlaceId, "DRINK", "TIPSY");
+    await store.replaceMyCandidates(meeting.id, host.user.id, [hostPlace.id]);
+
+    const meetingBefore = await store.detail(meeting.id, host.user.id);
+    assert.equal(meetingBefore.status, "RECRUITING");
+
+    const blocker = new Client({ connectionString: testDatabaseUrl });
+    await blocker.connect();
+    try {
+      await blocker.query("begin");
+      // Same lock key/derivation as the store's own
+      // `pg_advisory_xact_lock(hashtext('meeting:' + id))` calls.
+      await blocker.query("select pg_advisory_xact_lock(hashtext($1))", [`meeting:${meeting.id}`]);
+
+      const unregisterPromise = store.unregisterUserPlace(host.user.id, hostPlace.id, true);
+
+      // There's no clean signal for "the store's lock-acquisition query is
+      // now waiting on Postgres" from outside — a short delay is the
+      // pragmatic way to let unregisterUserPlace's initial SELECT (which
+      // finds the meeting RECRUITING) and its lock attempt actually run and
+      // block before we mutate state out from under it.
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      await blocker.query(`update meetings set status = 'VOTING', updated_at = now() where id = $1`, [
+        meeting.id
+      ]);
+      await blocker.query("commit");
+
+      const result = await unregisterPromise;
+      assert.equal(result.unregistered, true);
+      assert.equal(result.appliedToActiveMeetings, true);
+    } finally {
+      await blocker.end();
+    }
+
+    // The user_places row is deactivated regardless of the meeting's status
+    // — that update happens before the per-meeting loop and doesn't depend
+    // on the recheck.
+    const places = await store.listUserPlaces(host.user.id);
+    assert.equal(places.some((item) => item.id === hostPlace.id), false);
+
+    // But the candidate cleanup for `meeting` must have been skipped by the
+    // post-lock recheck: the candidate the user solely recommended is still
+    // there, because the meeting was no longer RECRUITING by the time the
+    // recheck ran, even though it was RECRUITING (and included in
+    // meetingIds) when the initial SELECT ran.
+    const candidatesAfter = await store.publicCandidates(meeting.id, host.user.id);
+    assert.equal(candidatesAfter.length, 1);
+
+    const meetingAfter = await store.detail(meeting.id, host.user.id);
+    assert.equal(meetingAfter.status, "VOTING");
   });
 });

@@ -1646,6 +1646,26 @@ export class PostgresStore {
       }
 
       for (const meetingId of meetingIds) {
+        const recheckResult = await client.query<{
+          meetingStatus: MeetingStatus;
+          memberStatus: string | null;
+        }>(
+          `
+            select
+              m.status as "meetingStatus",
+              member.status as "memberStatus"
+            from meetings m
+            left join meeting_members member
+              on member.meeting_id = m.id and member.user_id = $2
+            where m.id = $1
+          `,
+          [meetingId, userId]
+        );
+        const recheck = recheckResult.rows[0];
+        if (!recheck || recheck.meetingStatus !== "RECRUITING" || recheck.memberStatus !== "ACTIVE") {
+          continue;
+        }
+
         await client.query(
           `
             delete from candidate_recommendations recommendation

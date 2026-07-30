@@ -1052,6 +1052,14 @@ export class PostgresStore {
     }
   }
 
+  // Precondition: the caller MUST have already updated the source meeting's
+  // `status` away from RECRUITING/VOTING/FINAL_SELECTION (e.g. to COMPLETED)
+  // in the same transaction before calling this method. The INSERT below
+  // reuses the source meeting's `join_code` verbatim so members can find the
+  // next occurrence without a new code, but `meetings_active_join_code_unique`
+  // is a partial unique index that only covers those three "active" statuses.
+  // If the source row's status hasn't been flipped out of that set yet, this
+  // INSERT collides with the source row itself.
   private async createNextRecurringOccurrence(
     client: PoolClient,
     meeting: {
@@ -1080,28 +1088,55 @@ export class PostgresStore {
     const seriesId = meeting.seriesId ?? meeting.id;
     const nextMeetingId = randomUUID();
 
-    await client.query(
-      `
-        insert into meetings (
-          id, name, host_user_id, capacity, meeting_at, purpose, mood,
-          join_code, status, series_id, parent_meeting_id, recurrence_type
-        )
-        values ($1, $2, $3, $4, $5, $6, $7, $8, 'RECRUITING', $9, $10, $11)
-      `,
-      [
-        nextMeetingId,
-        meeting.name,
-        meeting.hostUserId,
-        meeting.capacity,
-        meetingAt,
-        meeting.purpose,
-        meeting.mood,
-        meeting.joinCode,
-        seriesId,
-        meeting.id,
-        recurrenceType
-      ]
-    );
+    // Primary attempt reuses the source meeting's own join_code (so members
+    // don't need a new code for the common case). On the rare chance that
+    // some unrelated active meeting elsewhere already holds that code, fall
+    // back to freshly generated candidates using the same bounded
+    // savepoint-retry pattern as createMeeting.
+    let inserted = false;
+    for (let attempt = 0; attempt < 50 && !inserted; attempt += 1) {
+      const joinCode = attempt === 0 ? meeting.joinCode : this.randomJoinCodeCandidate();
+      await client.query("savepoint next_occurrence_join_code_attempt");
+      try {
+        await client.query(
+          `
+            insert into meetings (
+              id, name, host_user_id, capacity, meeting_at, purpose, mood,
+              join_code, status, series_id, parent_meeting_id, recurrence_type
+            )
+            values ($1, $2, $3, $4, $5, $6, $7, $8, 'RECRUITING', $9, $10, $11)
+          `,
+          [
+            nextMeetingId,
+            meeting.name,
+            meeting.hostUserId,
+            meeting.capacity,
+            meetingAt,
+            meeting.purpose,
+            meeting.mood,
+            joinCode,
+            seriesId,
+            meeting.id,
+            recurrenceType
+          ]
+        );
+        inserted = true;
+      } catch (error) {
+        if (
+          typeof error === "object" &&
+          error !== null &&
+          "code" in error &&
+          error.code === "23505"
+        ) {
+          await client.query("rollback to savepoint next_occurrence_join_code_attempt");
+          continue;
+        }
+        throw error;
+      }
+    }
+    if (!inserted) {
+      throw new StoreError(500, "JOIN_CODE_EXHAUSTED", "가입 코드를 발급할 수 없습니다.");
+    }
 
     const memberRows = await client.query<{
       userId: string;

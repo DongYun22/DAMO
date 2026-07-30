@@ -355,6 +355,63 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
     );
   });
 
+  it("rejects a LEFT member's rejoin once their freed slot is taken by someone else", async () => {
+    const host = await store.signup("host-rejoin-full", "호스트", "pw1234");
+    const guest = await store.signup("guest-rejoin-full", "게스트", "pw1234");
+    const third = await store.signup("third-rejoin-full", "써드", "pw1234");
+    const meeting = await store.createMeeting(host.user.id, {
+      name: "재입장 정원 테스트",
+      capacity: 2,
+      meetingAt: "2026-08-01T10:00:00+09:00",
+      purpose: "CAFE",
+      mood: "FUN"
+    });
+
+    await store.joinMeeting(guest.user.id, meeting.id, meeting.joinCode!, "게스트닉");
+    await store.leaveMeeting(meeting.id, guest.user.id);
+
+    // Third user fills the slot the guest just vacated.
+    await store.joinMeeting(third.user.id, meeting.id, meeting.joinCode!, "써드닉");
+
+    // The guest's old (LEFT) membership row still exists, but the meeting is
+    // full again, so rejoining must be rejected rather than silently
+    // reactivating past capacity.
+    await assert.rejects(
+      () => store.joinMeeting(guest.user.id, meeting.id, meeting.joinCode!, "게스트닉2"),
+      (error: unknown) => (error as { code?: string }).code === "MEETING_CAPACITY_EXCEEDED"
+    );
+  });
+
+  it("reactivates a LEFT member on rejoin when there is room, refreshing their nickname and keeping their role", async () => {
+    const host = await store.signup("host-rejoin-room", "호스트", "pw1234");
+    const guest = await store.signup("guest-rejoin-room", "게스트", "pw1234");
+    const meeting = await store.createMeeting(host.user.id, {
+      name: "재입장 여유 테스트",
+      capacity: 3,
+      meetingAt: "2026-08-01T10:00:00+09:00",
+      purpose: "CAFE",
+      mood: "FUN"
+    });
+
+    await store.joinMeeting(guest.user.id, meeting.id, meeting.joinCode!, "게스트닉");
+    await store.leaveMeeting(meeting.id, guest.user.id);
+
+    const rejoined = await store.joinMeeting(
+      guest.user.id,
+      meeting.id,
+      meeting.joinCode!,
+      "새닉네임"
+    );
+    assert.equal(rejoined.members.length, 2);
+
+    const detail = await store.detail(meeting.id, host.user.id);
+    const rejoinedMember = detail.members.find((member) => member.userId === guest.user.id);
+    assert.ok(rejoinedMember);
+    assert.equal(rejoinedMember!.status, "ACTIVE");
+    assert.equal(rejoinedMember!.meetingNickname, "새닉네임");
+    assert.equal(rejoinedMember!.role, "MEMBER");
+  });
+
   it("creates a meeting with a unique join code and a host member", async () => {
     const host = await store.signup("host-create", "호스트", "pw1234");
     const meeting = await store.createMeeting(host.user.id, {

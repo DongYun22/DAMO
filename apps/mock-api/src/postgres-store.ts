@@ -1746,13 +1746,20 @@ export class PostgresStore {
         throw new StoreError(409, "MEETING_NOT_RECRUITING", "이미 투표가 시작된 모임입니다.");
       }
 
-      const existingResult = await client.query<{ id: string }>(
-        `select id from meeting_members where meeting_id = $1 and user_id = $2`,
+      const existingResult = await client.query<{
+        id: string;
+        status: "ACTIVE" | "LEFT" | "KICKED";
+      }>(
+        `select id, status from meeting_members where meeting_id = $1 and user_id = $2`,
         [meetingId, userId]
       );
       const existing = existingResult.rows[0];
 
-      if (!existing) {
+      // A brand-new member and a LEFT/KICKED member rejoining both add a new
+      // ACTIVE seat, so both must be checked against capacity. An already-ACTIVE
+      // member calling joinMeeting again (e.g. a duplicate request) doesn't
+      // change the ACTIVE count, so it's exempt from the check.
+      if (!existing || existing.status !== "ACTIVE") {
         const countResult = await client.query<{ count: number }>(
           `
             select count(*)::int as count
@@ -1764,6 +1771,9 @@ export class PostgresStore {
         if ((countResult.rows[0]?.count ?? 0) >= meeting.capacity) {
           throw new StoreError(409, "MEETING_CAPACITY_EXCEEDED", "모임 정원이 모두 찼습니다.");
         }
+      }
+
+      if (!existing) {
         await client.query(
           `
             insert into meeting_members (id, meeting_id, user_id, meeting_nickname, role, status)

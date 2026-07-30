@@ -1803,7 +1803,32 @@ export class PostgresStore {
   }
 
   async deleteMeeting(meetingId: string, userId: string) {
-    return this.write((store) => store.deleteMeeting(meetingId, userId));
+    return this.withMeetingLock(meetingId, async (client) => {
+      const result = await client.query<{ hostUserId: string }>(
+        `
+          select host_user_id as "hostUserId"
+          from meetings
+          where id = $1 and status <> 'DELETED'
+        `,
+        [meetingId]
+      );
+      const meeting = result.rows[0];
+      if (!meeting) {
+        throw new StoreError(404, "MEETING_NOT_FOUND", "모임을 찾을 수 없습니다.");
+      }
+      if (meeting.hostUserId !== userId) {
+        throw new StoreError(403, "HOST_ONLY", "모임장만 실행할 수 있습니다.");
+      }
+      await client.query(
+        `
+          update meetings
+          set status = 'DELETED', deleted_at = now(), updated_at = now()
+          where id = $1
+        `,
+        [meetingId]
+      );
+      return { meetingId, deleted: true };
+    });
   }
 
   async eligiblePlaces(meetingId: string, userId: string) {

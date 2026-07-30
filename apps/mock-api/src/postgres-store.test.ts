@@ -298,6 +298,32 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
     });
   });
 
+  it("deletes a meeting and rejects non-hosts", async () => {
+    const host = await store.signup("host-delete", "호스트", "pw1234");
+    const guest = await store.signup("guest-delete", "게스트", "pw1234");
+    const meeting = await store.createMeeting(host.user.id, {
+      name: "삭제 테스트",
+      capacity: 2,
+      meetingAt: "2026-08-01T10:00:00+09:00",
+      purpose: "STUDY",
+      mood: "QUIET"
+    });
+    await store.joinMeeting(guest.user.id, meeting.id, meeting.joinCode!, "게스트닉");
+
+    await assert.rejects(
+      () => store.deleteMeeting(meeting.id, guest.user.id),
+      (error: unknown) => (error as { code?: string }).code === "HOST_ONLY"
+    );
+
+    const result = await store.deleteMeeting(meeting.id, host.user.id);
+    assert.equal(result.deleted, true);
+
+    await assert.rejects(
+      () => store.detail(meeting.id, host.user.id),
+      (error: unknown) => (error as { code?: string }).code === "MEETING_ACCESS_DENIED"
+    );
+  });
+
   it("creates a meeting with a unique join code and a host member", async () => {
     const host = await store.signup("host-create", "호스트", "pw1234");
     const meeting = await store.createMeeting(host.user.id, {

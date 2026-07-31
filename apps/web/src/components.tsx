@@ -51,8 +51,8 @@ export function Logo({ compact = false }: { compact?: boolean }) {
   return (
     <Link to="/" className={`logo ${compact ? "logo--compact" : ""}`} aria-label="DAMO 홈">
       <span className="logo__mark" aria-hidden="true">
-        <span />
-        <span />
+        <span>DA</span>
+        <span>MO</span>
       </span>
       <span className="logo__word">DAMO</span>
     </Link>

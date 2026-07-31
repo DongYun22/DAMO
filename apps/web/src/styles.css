@@ -202,21 +202,21 @@ select {
 
 .logo__mark span {
   position: absolute;
-  width: 20px;
-  height: 16px;
-  border-radius: 11px 11px 11px 4px;
-  background: white;
+  color: white;
+  font-size: 16px;
+  font-weight: 950;
+  line-height: 0.8;
+  letter-spacing: -0.12em;
 }
 
 .logo__mark span:first-child {
-  top: 10px;
-  left: 9px;
+  top: 13px;
+  left: 11px;
 }
 
 .logo__mark span:last-child {
-  right: 8px;
-  bottom: 9px;
-  transform: rotate(180deg);
+  right: 10px;
+  bottom: 13px;
 }
 
 .logo__word {
@@ -237,18 +237,17 @@ select {
 }
 
 .logo--compact .logo__mark span {
-  width: 17px;
-  height: 13px;
+  font-size: 13px;
 }
 
 .logo--compact .logo__mark span:first-child {
-  top: 9px;
-  left: 8px;
+  top: 11px;
+  left: 9px;
 }
 
 .logo--compact .logo__mark span:last-child {
-  right: 7px;
-  bottom: 8px;
+  right: 8px;
+  bottom: 11px;
 }
 
 .logo--compact .logo__word {

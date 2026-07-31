@@ -382,7 +382,10 @@ export function MapPage() {
   const [searchParams] = useSearchParams();
   const meetingId = searchParams.get("meetingId") ?? "";
   const candidatePath = meetingId ? `/meetings/${meetingId}/candidates` : "";
-  const [query, setQuery] = useState("");
+  // Default search on load — a single bounded query (capped at 5 Naver
+  // Search API results) instead of an empty query, which falls back to
+  // returning every place ever saved in the local `places` table.
+  const [query, setQuery] = useState("연세대학교 이윤재관");
   const [places, setPlaces] = useState<Place[]>([]);
   const [saved, setSaved] = useState<UserPlace[]>([]);
   const [selected, setSelected] = useState<Place | null>(null);

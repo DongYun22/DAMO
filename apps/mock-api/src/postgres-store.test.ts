@@ -4,6 +4,10 @@ import { Client } from "pg";
 import { PostgresStore } from "./postgres-store.js";
 
 const testDatabaseUrl = process.env.TEST_DATABASE_URL;
+// Captured before `before()` overwrites process.env.DATABASE_URL with
+// testDatabaseUrl, so we can still detect "TEST_DATABASE_URL is secretly
+// the same database as production DATABASE_URL" further down.
+const originalDatabaseUrl = process.env.DATABASE_URL;
 
 // Returns true only if `value` (lower-cased) contains "test" as a whole
 // segment once split on non-alphanumeric characters (so "damo_test" and
@@ -18,8 +22,10 @@ function containsTestWord(value: string): boolean {
 }
 
 // Structural (not substring) check that a Postgres connection string points
-// at a throwaway/local database: either the hostname is exactly a loopback
-// address, or the hostname/database name contains the whole word "test".
+// at a throwaway/test database: the hostname or database name must contain
+// the whole word "test". Being on localhost is NOT sufficient by itself —
+// an ordinary local dev database (e.g. `postgresql://user@localhost/damo`)
+// must still be rejected, since it's not a throwaway database either.
 function isSafeTestConnectionString(rawUrl: string): boolean {
   let parsed: URL;
   try {
@@ -28,12 +34,28 @@ function isSafeTestConnectionString(rawUrl: string): boolean {
     return false;
   }
 
-  const hostname = parsed.hostname.toLowerCase();
-  if (hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1") {
-    return true;
-  }
+  return containsTestWord(parsed.hostname) || containsTestWord(parsed.pathname);
+}
 
-  return containsTestWord(hostname) || containsTestWord(parsed.pathname);
+// Normalizes a connection string down to the (host, port, database) triple
+// it targets, for comparing whether two connection strings point at the
+// same physical database regardless of superficial differences (query
+// string, credentials, casing).
+function normalizedDatabaseTarget(rawUrl: string): string | null {
+  try {
+    const parsed = new URL(rawUrl);
+    const port = parsed.port || "5432";
+    return `${parsed.hostname.toLowerCase()}:${port}${parsed.pathname}`;
+  } catch {
+    return null;
+  }
+}
+
+function pointsAtSameDatabase(testUrl: string, otherUrl: string | undefined): boolean {
+  if (!otherUrl) return false;
+  const testTarget = normalizedDatabaseTarget(testUrl);
+  const otherTarget = normalizedDatabaseTarget(otherUrl);
+  return testTarget !== null && testTarget === otherTarget;
 }
 
 // Describes the connection target without ever including userinfo
@@ -50,22 +72,77 @@ function describeConnectionTarget(rawUrl: string): string {
   }
 }
 
+// Safety guard: `beforeEach` below calls `store.reset()`, which truncates
+// every table. Refuse to run unless the connection string clearly points at
+// a throwaway/test database AND is distinct from the production
+// DATABASE_URL, so a copy-paste mistake (reusing an ordinary local dev DB,
+// or accidentally reusing the production connection string) can't wipe real
+// data. Throws before any connection is opened or any destructive call is
+// made.
+function assertSafeTestDatabase(testUrl: string, productionUrl: string | undefined): void {
+  if (!isSafeTestConnectionString(testUrl)) {
+    throw new Error(
+      `Refusing to run destructive PostgresStore integration tests: TEST_DATABASE_URL ` +
+        `does not look like a test database (${describeConnectionTarget(testUrl)}). ` +
+        `Expected the hostname or database name to contain the whole word "test" ` +
+        `(being on localhost is not sufficient by itself). ` +
+        `This suite calls store.reset(), which truncates every table.`,
+    );
+  }
+
+  if (pointsAtSameDatabase(testUrl, productionUrl)) {
+    throw new Error(
+      `Refusing to run destructive PostgresStore integration tests: TEST_DATABASE_URL points ` +
+        `at the same database as DATABASE_URL (${describeConnectionTarget(testUrl)}). ` +
+        `This suite calls store.reset(), which truncates every table.`,
+    );
+  }
+}
+
+describe("test-database connection-string safety guard", () => {
+  it("allows a database name containing the word test", () => {
+    assert.doesNotThrow(() =>
+      assertSafeTestDatabase("postgresql://user@localhost:5432/damo_test", undefined),
+    );
+  });
+
+  it("rejects localhost when the database name has no test token", () => {
+    assert.throws(() => assertSafeTestDatabase("postgresql://user@localhost:5432/damo", undefined));
+  });
+
+  it("rejects a TEST_DATABASE_URL identical to the production DATABASE_URL", () => {
+    const url = "postgresql://user:secret@db.example.com:5432/damo_test";
+    assert.throws(() => assertSafeTestDatabase(url, url));
+  });
+
+  it("rejects a Supabase database with no test token in its name", () => {
+    assert.throws(() =>
+      assertSafeTestDatabase(
+        "postgresql://postgres.abcproj:secret@aws-1-ap-northeast-2.pooler.supabase.com:5432/postgres",
+        undefined,
+      ),
+    );
+  });
+
+  it("rejects a malformed connection string", () => {
+    assert.throws(() => assertSafeTestDatabase("not-a-valid-url", undefined));
+  });
+
+  it("never leaks credentials in the rejection message", () => {
+    const url = "postgresql://admin:sup3rsecret@db.example.com:5432/damo";
+    assert.throws(() => assertSafeTestDatabase(url, undefined), (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.ok(!error.message.includes("sup3rsecret"));
+      return true;
+    });
+  });
+});
+
 describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
   let store: PostgresStore;
 
   before(() => {
-    // Safety guard: `beforeEach` below calls `store.reset()`, which truncates
-    // every table. Refuse to run unless the connection string clearly points
-    // at a throwaway/local database, so a copy-paste mistake (e.g. reusing
-    // the production DATABASE_URL as TEST_DATABASE_URL) can't wipe real data.
-    if (!isSafeTestConnectionString(testDatabaseUrl!)) {
-      throw new Error(
-        `Refusing to run destructive PostgresStore integration tests: TEST_DATABASE_URL ` +
-          `does not look like a test/local database (${describeConnectionTarget(testDatabaseUrl!)}). ` +
-          `Expected the hostname to be localhost/127.0.0.1/::1, or the hostname/database name to ` +
-          `contain the whole word "test". This suite calls store.reset(), which truncates every table.`,
-      );
-    }
+    assertSafeTestDatabase(testDatabaseUrl!, originalDatabaseUrl);
 
     process.env.DATABASE_URL = testDatabaseUrl;
     store = new PostgresStore();

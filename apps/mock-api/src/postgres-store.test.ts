@@ -2302,4 +2302,447 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
       (error: unknown) => (error as { code?: string }).code === "NEXT_MEETING_ALREADY_EXISTS"
     );
   });
+
+  it("auto-completes a past-due RECRUITING meeting with no final candidate", async () => {
+    // RECRUITING meetings never have a `votes` row at all, so this is the
+    // simplest case: no vote tally to run, just a direct status flip.
+    //
+    // createMeeting() itself returns via detail() -> home(), which runs the
+    // auto-complete pre-step for the caller's own past-due meetings before
+    // returning anything — so with a meetingAt already in the past, even
+    // this very first read already reflects the completed state.
+    const host = await store.signup("host-auto-recruiting", "호스트", "pw1234");
+    const meeting = await store.createMeeting(host.user.id, {
+      name: "지난 모집 모임",
+      capacity: 2,
+      meetingAt: "2020-01-01T10:00:00+09:00",
+      purpose: "CAFE",
+      mood: "QUIET"
+    });
+
+    const detail = await store.detail(meeting.id, host.user.id);
+    assert.equal(detail.status, "COMPLETED");
+    assert.equal(detail.finalCandidateId, null);
+    assert.equal(detail.finalPlace, null);
+  });
+
+  it("auto-completes a past-due VOTING meeting with a solo leader into that candidate as final", async () => {
+    const host = await store.signup("host-auto-solo", "호스트", "pw1234");
+    const guest = await store.signup("guest-auto-solo", "게스트", "pw1234");
+    const meeting = await store.createMeeting(host.user.id, {
+      name: "단독 1위 자동완료 테스트",
+      capacity: 2,
+      meetingAt: "2026-08-01T10:00:00+09:00",
+      purpose: "CAFE",
+      mood: "QUIET"
+    });
+    await store.joinMeeting(guest.user.id, meeting.id, meeting.joinCode!, "게스트닉");
+    const [placeA] = await store.upsertPlaces([
+      {
+        id: "place-auto-solo-a",
+        naverPlaceId: "naver-auto-solo-a",
+        name: "가카페",
+        category: "카페",
+        address: "서울",
+        roadAddress: "서울",
+        latitude: 37.5,
+        longitude: 127.0,
+        station: "강남",
+        distanceText: "1분"
+      }
+    ]);
+    const [placeB] = await store.upsertPlaces([
+      {
+        id: "place-auto-solo-b",
+        naverPlaceId: "naver-auto-solo-b",
+        name: "나카페",
+        category: "카페",
+        address: "서울",
+        roadAddress: "서울",
+        latitude: 37.6,
+        longitude: 127.1,
+        station: "역삼",
+        distanceText: "2분"
+      }
+    ]);
+    const hostPlace = await store.registerUserPlace(host.user.id, placeA!.naverPlaceId, "CAFE", "QUIET");
+    const guestPlace = await store.registerUserPlace(guest.user.id, placeB!.naverPlaceId, "CAFE", "QUIET");
+    await store.replaceMyCandidates(meeting.id, host.user.id, [hostPlace.id]);
+    await store.replaceMyCandidates(meeting.id, guest.user.id, [guestPlace.id]);
+    const { voteId } = await store.createVote(meeting.id, host.user.id);
+
+    // Both members vote for the same candidate -> a genuine solo leader,
+    // decided BEFORE the deadline is simulated to have passed below.
+    const hostSession = await store.voteSession(meeting.id, host.user.id);
+    const winnerCandidateId = hostSession.round!.candidateA.id;
+    await store.saveChoice(meeting.id, host.user.id, 1, winnerCandidateId);
+    const guestSession = await store.voteSession(meeting.id, guest.user.id);
+    const guestChoiceId =
+      guestSession.round!.candidateA.id === winnerCandidateId
+        ? guestSession.round!.candidateA.id
+        : guestSession.round!.candidateB.id;
+    assert.equal(guestChoiceId, winnerCandidateId);
+    await store.saveChoice(meeting.id, guest.user.id, 1, guestChoiceId);
+
+    const raw = new Client({ connectionString: testDatabaseUrl });
+    await raw.connect();
+    try {
+      await raw.query(`update meetings set meeting_at = '2020-01-01T10:00:00+09:00' where id = $1`, [
+        meeting.id
+      ]);
+    } finally {
+      await raw.end();
+    }
+
+    const detail = await store.detail(meeting.id, host.user.id);
+    assert.equal(detail.status, "COMPLETED");
+    assert.equal(detail.finalCandidateId, winnerCandidateId);
+    assert.notEqual(detail.finalPlace, null);
+    assert.equal(voteId.length > 0, true);
+  });
+
+  it("auto-completes a past-due VOTING meeting that's tied with no final candidate", async () => {
+    const host = await store.signup("host-auto-tie", "호스트", "pw1234");
+    const guest = await store.signup("guest-auto-tie", "게스트", "pw1234");
+    const meeting = await store.createMeeting(host.user.id, {
+      name: "동점 자동완료 테스트",
+      capacity: 2,
+      meetingAt: "2026-08-01T10:00:00+09:00",
+      purpose: "CAFE",
+      mood: "QUIET"
+    });
+    await store.joinMeeting(guest.user.id, meeting.id, meeting.joinCode!, "게스트닉");
+    const [placeA] = await store.upsertPlaces([
+      {
+        id: "place-auto-tie-a",
+        naverPlaceId: "naver-auto-tie-a",
+        name: "가카페",
+        category: "카페",
+        address: "서울",
+        roadAddress: "서울",
+        latitude: 37.5,
+        longitude: 127.0,
+        station: "강남",
+        distanceText: "1분"
+      }
+    ]);
+    const [placeB] = await store.upsertPlaces([
+      {
+        id: "place-auto-tie-b",
+        naverPlaceId: "naver-auto-tie-b",
+        name: "나카페",
+        category: "카페",
+        address: "서울",
+        roadAddress: "서울",
+        latitude: 37.6,
+        longitude: 127.1,
+        station: "역삼",
+        distanceText: "2분"
+      }
+    ]);
+    const hostPlace = await store.registerUserPlace(host.user.id, placeA!.naverPlaceId, "CAFE", "QUIET");
+    const guestPlace = await store.registerUserPlace(guest.user.id, placeB!.naverPlaceId, "CAFE", "QUIET");
+    await store.replaceMyCandidates(meeting.id, host.user.id, [hostPlace.id]);
+    await store.replaceMyCandidates(meeting.id, guest.user.id, [guestPlace.id]);
+    await store.createVote(meeting.id, host.user.id);
+
+    const hostSession = await store.voteSession(meeting.id, host.user.id);
+    const hostChoiceId = hostSession.round!.candidateA.id;
+    await store.saveChoice(meeting.id, host.user.id, 1, hostChoiceId);
+    const guestSession = await store.voteSession(meeting.id, guest.user.id);
+    // Pick whichever of the guest's candidates is NOT the one the host
+    // chose, so the two members deliberately split their votes 1-1 into a
+    // genuine tie, regardless of how candidate order is rotated per member
+    // (same technique as the "closes a tied vote" test above).
+    const guestChoiceId =
+      guestSession.round!.candidateA.id === hostChoiceId
+        ? guestSession.round!.candidateB.id
+        : guestSession.round!.candidateA.id;
+    await store.saveChoice(meeting.id, guest.user.id, 1, guestChoiceId);
+
+    const raw = new Client({ connectionString: testDatabaseUrl });
+    await raw.connect();
+    try {
+      await raw.query(`update meetings set meeting_at = '2020-01-01T10:00:00+09:00' where id = $1`, [
+        meeting.id
+      ]);
+    } finally {
+      await raw.end();
+    }
+
+    const detail = await store.detail(meeting.id, host.user.id);
+    assert.equal(detail.status, "COMPLETED");
+    assert.equal(detail.finalCandidateId, null);
+    assert.equal(detail.finalPlace, null);
+  });
+
+  it("auto-completes a past-due VOTING meeting with no votes cast and no final candidate", async () => {
+    const host = await store.signup("host-auto-novotes", "호스트", "pw1234");
+    const guest = await store.signup("guest-auto-novotes", "게스트", "pw1234");
+    const meeting = await store.createMeeting(host.user.id, {
+      name: "무득표 자동완료 테스트",
+      capacity: 2,
+      meetingAt: "2026-08-01T10:00:00+09:00",
+      purpose: "CAFE",
+      mood: "QUIET"
+    });
+    await store.joinMeeting(guest.user.id, meeting.id, meeting.joinCode!, "게스트닉");
+    const [placeA] = await store.upsertPlaces([
+      {
+        id: "place-auto-novotes-a",
+        naverPlaceId: "naver-auto-novotes-a",
+        name: "가카페",
+        category: "카페",
+        address: "서울",
+        roadAddress: "서울",
+        latitude: 37.5,
+        longitude: 127.0,
+        station: "강남",
+        distanceText: "1분"
+      }
+    ]);
+    const [placeB] = await store.upsertPlaces([
+      {
+        id: "place-auto-novotes-b",
+        naverPlaceId: "naver-auto-novotes-b",
+        name: "나카페",
+        category: "카페",
+        address: "서울",
+        roadAddress: "서울",
+        latitude: 37.6,
+        longitude: 127.1,
+        station: "역삼",
+        distanceText: "2분"
+      }
+    ]);
+    const hostPlace = await store.registerUserPlace(host.user.id, placeA!.naverPlaceId, "CAFE", "QUIET");
+    const guestPlace = await store.registerUserPlace(guest.user.id, placeB!.naverPlaceId, "CAFE", "QUIET");
+    await store.replaceMyCandidates(meeting.id, host.user.id, [hostPlace.id]);
+    await store.replaceMyCandidates(meeting.id, guest.user.id, [guestPlace.id]);
+    await store.createVote(meeting.id, host.user.id);
+    // Neither member casts a single vote.
+
+    const raw = new Client({ connectionString: testDatabaseUrl });
+    await raw.connect();
+    try {
+      await raw.query(`update meetings set meeting_at = '2020-01-01T10:00:00+09:00' where id = $1`, [
+        meeting.id
+      ]);
+    } finally {
+      await raw.end();
+    }
+
+    const detail = await store.detail(meeting.id, host.user.id);
+    assert.equal(detail.status, "COMPLETED");
+    assert.equal(detail.finalCandidateId, null);
+    assert.equal(detail.finalPlace, null);
+  });
+
+  it("blocks joining, candidate changes, and further vote choices once a meeting has auto-completed", async () => {
+    const host = await store.signup("host-auto-block", "호스트", "pw1234");
+    const guest = await store.signup("guest-auto-block", "게스트", "pw1234");
+    const outsider = await store.signup("outsider-auto-block", "외부인", "pw1234");
+    const meeting = await store.createMeeting(host.user.id, {
+      name: "차단 테스트",
+      capacity: 3,
+      meetingAt: "2026-08-01T10:00:00+09:00",
+      purpose: "CAFE",
+      mood: "QUIET"
+    });
+    await store.joinMeeting(guest.user.id, meeting.id, meeting.joinCode!, "게스트닉");
+    const [placeA] = await store.upsertPlaces([
+      {
+        id: "place-auto-block-a",
+        naverPlaceId: "naver-auto-block-a",
+        name: "가카페",
+        category: "카페",
+        address: "서울",
+        roadAddress: "서울",
+        latitude: 37.5,
+        longitude: 127.0,
+        station: "강남",
+        distanceText: "1분"
+      }
+    ]);
+    const [placeB] = await store.upsertPlaces([
+      {
+        id: "place-auto-block-b",
+        naverPlaceId: "naver-auto-block-b",
+        name: "나카페",
+        category: "카페",
+        address: "서울",
+        roadAddress: "서울",
+        latitude: 37.6,
+        longitude: 127.1,
+        station: "역삼",
+        distanceText: "2분"
+      }
+    ]);
+    const hostPlace = await store.registerUserPlace(host.user.id, placeA!.naverPlaceId, "CAFE", "QUIET");
+    const guestPlace = await store.registerUserPlace(guest.user.id, placeB!.naverPlaceId, "CAFE", "QUIET");
+    await store.replaceMyCandidates(meeting.id, host.user.id, [hostPlace.id]);
+    await store.replaceMyCandidates(meeting.id, guest.user.id, [guestPlace.id]);
+    await store.createVote(meeting.id, host.user.id);
+    const hostSession = await store.voteSession(meeting.id, host.user.id);
+    const winnerCandidateId = hostSession.round!.candidateA.id;
+    await store.saveChoice(meeting.id, host.user.id, 1, winnerCandidateId);
+    // Guest never votes -> host's single vote is the solo leader once this
+    // auto-completes.
+
+    const raw = new Client({ connectionString: testDatabaseUrl });
+    await raw.connect();
+    try {
+      await raw.query(`update meetings set meeting_at = '2020-01-01T10:00:00+09:00' where id = $1`, [
+        meeting.id
+      ]);
+    } finally {
+      await raw.end();
+    }
+
+    // Triggers the transition (via detail() -> home()) before the blocked
+    // calls below, so each one observes an already-COMPLETED meeting.
+    const detailBefore = await store.detail(meeting.id, host.user.id);
+    assert.equal(detailBefore.status, "COMPLETED");
+    assert.equal(detailBefore.finalCandidateId, winnerCandidateId);
+
+    await assert.rejects(
+      () => store.joinMeeting(outsider.user.id, meeting.id, meeting.joinCode!, "외부인닉"),
+      (error: unknown) => (error as { code?: string }).code === "MEETING_NOT_RECRUITING"
+    );
+    await assert.rejects(
+      () => store.replaceMyCandidates(meeting.id, guest.user.id, [guestPlace.id]),
+      (error: unknown) => (error as { code?: string }).code === "CANDIDATES_FROZEN"
+    );
+    await assert.rejects(
+      () => store.saveChoice(meeting.id, guest.user.id, 1, winnerCandidateId),
+      (error: unknown) => (error as { code?: string }).code === "VOTE_CLOSED"
+    );
+
+    // Confirm none of the rejected calls mutated anything.
+    const detailAfter = await store.detail(meeting.id, host.user.id);
+    assert.equal(detailAfter.status, "COMPLETED");
+    assert.equal(detailAfter.finalCandidateId, winnerCandidateId);
+  });
+
+  it("returns an auto-completed meeting as COMPLETED from home(), not just via the isPastDue display flag", async () => {
+    const host = await store.signup("host-auto-home", "호스트", "pw1234");
+    const meeting = await store.createMeeting(host.user.id, {
+      name: "홈 조회 자동완료 테스트",
+      capacity: 2,
+      meetingAt: "2020-01-01T10:00:00+09:00",
+      purpose: "CAFE",
+      mood: "QUIET"
+    });
+
+    const home = await store.home(host.user.id);
+    const summary = home.completedMeetings.find((item) => item.id === meeting.id);
+    assert.ok(summary);
+    assert.equal(summary!.status, "COMPLETED");
+    assert.equal(summary!.isPastDue, true);
+    assert.equal(home.ongoingMeetings.some((item) => item.id === meeting.id), false);
+  });
+
+  it("stays consistent when a meeting's deadline passes while its last outstanding vote choice is in flight", async () => {
+    // Both saveChoice and the auto-complete transition run inside the exact
+    // same `meeting:{id}` advisory lock (see withMeetingLock), so they can
+    // never truly run "at the same time" — but which one wins the lock
+    // queue is still a real race. This drives that race with two actual
+    // connections and asserts the outcome is consistent either way: either
+    // the vote choice is recorded and counted, or the meeting has already
+    // completed (using only the votes that existed before it) and the
+    // choice is rejected — never a half-applied mix of both.
+    const host = await store.signup("host-auto-race", "호스트", "pw1234");
+    const guest = await store.signup("guest-auto-race", "게스트", "pw1234");
+    const meeting = await store.createMeeting(host.user.id, {
+      name: "동시성 자동완료 테스트",
+      capacity: 2,
+      meetingAt: "2026-08-01T10:00:00+09:00",
+      purpose: "CAFE",
+      mood: "QUIET"
+    });
+    await store.joinMeeting(guest.user.id, meeting.id, meeting.joinCode!, "게스트닉");
+    const [placeA] = await store.upsertPlaces([
+      {
+        id: "place-auto-race-a",
+        naverPlaceId: "naver-auto-race-a",
+        name: "가카페",
+        category: "카페",
+        address: "서울",
+        roadAddress: "서울",
+        latitude: 37.5,
+        longitude: 127.0,
+        station: "강남",
+        distanceText: "1분"
+      }
+    ]);
+    const [placeB] = await store.upsertPlaces([
+      {
+        id: "place-auto-race-b",
+        naverPlaceId: "naver-auto-race-b",
+        name: "나카페",
+        category: "카페",
+        address: "서울",
+        roadAddress: "서울",
+        latitude: 37.6,
+        longitude: 127.1,
+        station: "역삼",
+        distanceText: "2분"
+      }
+    ]);
+    const hostPlace = await store.registerUserPlace(host.user.id, placeA!.naverPlaceId, "CAFE", "QUIET");
+    const guestPlace = await store.registerUserPlace(guest.user.id, placeB!.naverPlaceId, "CAFE", "QUIET");
+    await store.replaceMyCandidates(meeting.id, host.user.id, [hostPlace.id]);
+    await store.replaceMyCandidates(meeting.id, guest.user.id, [guestPlace.id]);
+    await store.createVote(meeting.id, host.user.id);
+
+    // Host casts the only vote that will exist if the deadline wins the
+    // race. Guest's choice below is the "last outstanding" one.
+    const hostSession = await store.voteSession(meeting.id, host.user.id);
+    const hostChoiceId = hostSession.round!.candidateA.id;
+    await store.saveChoice(meeting.id, host.user.id, 1, hostChoiceId);
+    const guestSession = await store.voteSession(meeting.id, guest.user.id);
+    const guestChoiceId =
+      guestSession.round!.candidateA.id === hostChoiceId
+        ? guestSession.round!.candidateB.id
+        : guestSession.round!.candidateA.id;
+    assert.notEqual(guestChoiceId, hostChoiceId);
+
+    const blocker = new Client({ connectionString: testDatabaseUrl });
+    await blocker.connect();
+    try {
+      await blocker.query("begin");
+      await blocker.query("select pg_advisory_xact_lock(hashtext($1))", [`meeting:${meeting.id}`]);
+
+      const guestChoicePromise = store.saveChoice(meeting.id, guest.user.id, 1, guestChoiceId);
+
+      // Let saveChoice actually reach and block on the meeting lock before
+      // we simulate the deadline passing and release it.
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      await blocker.query(`update meetings set meeting_at = '2020-01-01T10:00:00+09:00' where id = $1`, [
+        meeting.id
+      ]);
+      await blocker.query("commit");
+
+      const outcome = await Promise.allSettled([guestChoicePromise]);
+
+      const detail = await store.detail(meeting.id, host.user.id);
+      assert.equal(detail.status, "COMPLETED");
+
+      if (outcome[0]!.status === "rejected") {
+        // The deadline won the race: saveChoice's own withMeetingLock call
+        // ran auto-complete first, which closed the vote using only the
+        // host's vote, then saveChoice's own VOTING check rejected it.
+        assert.equal((outcome[0]!.reason as { code?: string }).code, "VOTE_CLOSED");
+        assert.equal(detail.finalCandidateId, hostChoiceId);
+      } else {
+        // saveChoice won the race and recorded the guest's vote before the
+        // deadline was simulated as having passed. With both votes cast for
+        // different candidates, the tally is a genuine tie -> null final
+        // candidate, not host's choice by default.
+        assert.equal(detail.finalCandidateId, null);
+      }
+    } finally {
+      await blocker.end();
+    }
+  });
 });

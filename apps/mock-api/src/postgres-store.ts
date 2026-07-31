@@ -1066,7 +1066,10 @@ export class PostgresStore {
     meetingId: string,
     operation: (client: PoolClient) => Promise<T>
   ): Promise<T> {
-    return this.withLocks([`meeting:${meetingId}`], operation);
+    return this.withLocks([`meeting:${meetingId}`], async (client) => {
+      await this.autoCompletePastDueMeeting(client, meetingId);
+      return operation(client);
+    });
   }
 
   // Sorted so that any two callers locking overlapping sets of places always
@@ -1191,6 +1194,101 @@ export class PostgresStore {
       `update meetings set next_meeting_id = $2, updated_at = now() where id = $1`,
       [meeting.id, nextMeetingId]
     );
+  }
+
+  // Called by `withMeetingLock` at the start of every meeting-locked
+  // operation, and by `home()` for each stale meeting it's about to
+  // display, so a meeting whose date has passed is transitioned to
+  // COMPLETED atomically inside the same advisory lock as whatever
+  // operation triggered it — never as a separate, un-locked step. No-op
+  // unless the meeting is still RECRUITING/VOTING/FINAL_SELECTION AND its
+  // meeting_at has passed; otherwise every caller's own status check
+  // (RECRUITING-only, VOTING-only, etc.) naturally rejects with its
+  // existing error code once this has run, so no other method needs its
+  // own past-due check.
+  //
+  // Mirrors closeVote's solo-winner/tie logic exactly, except a tie (or no
+  // votes at all) resolves straight to COMPLETED with a null
+  // final_candidate_id instead of the intermediate FINAL_SELECTION state —
+  // there's no host present to make the manual pick a past-due meeting
+  // would otherwise wait on.
+  private async autoCompletePastDueMeeting(client: PoolClient, meetingId: string): Promise<void> {
+    const meetingResult = await client.query<{
+      status: MeetingStatus;
+      meetingAt: Date | string;
+      name: string;
+      hostUserId: string;
+      capacity: number;
+      purpose: Purpose;
+      mood: Mood;
+      joinCode: string;
+      seriesId: string | null;
+      recurrenceType: RecurrenceType | null;
+      recurrenceNextAt: Date | string | null;
+      nextMeetingId: string | null;
+    }>(
+      `
+        select
+          status, meeting_at as "meetingAt", name, host_user_id as "hostUserId",
+          capacity, purpose, mood, join_code as "joinCode", series_id as "seriesId",
+          recurrence_type as "recurrenceType", recurrence_next_at as "recurrenceNextAt",
+          next_meeting_id as "nextMeetingId"
+        from meetings
+        where id = $1
+        for update
+      `,
+      [meetingId]
+    );
+    const meeting = meetingResult.rows[0];
+    if (!meeting) return;
+    if (
+      meeting.status !== "RECRUITING" &&
+      meeting.status !== "VOTING" &&
+      meeting.status !== "FINAL_SELECTION"
+    ) {
+      return;
+    }
+    if (new Date(meeting.meetingAt).getTime() >= Date.now()) return;
+
+    let finalCandidateId: string | null = null;
+    if (meeting.status === "VOTING" || meeting.status === "FINAL_SELECTION") {
+      // The host is guaranteed to still be an ACTIVE member (leaveMeeting
+      // rejects the host, kickMember rejects kicking the host), so this
+      // always satisfies computeVoteResults' membership check regardless of
+      // who/what triggered this transition.
+      const results = await this.computeVoteResults(client, meetingId, meeting.hostUserId);
+      if (results.tiedFirstCandidateIds.length === 1) {
+        finalCandidateId = results.tiedFirstCandidateIds[0]!;
+      }
+      await client.query(
+        `update votes set status = 'CLOSED', closed_at = now() where meeting_id = $1`,
+        [meetingId]
+      );
+    }
+
+    await client.query(
+      `
+        update meetings
+        set status = 'COMPLETED', final_candidate_id = $2, updated_at = now()
+        where id = $1
+      `,
+      [meetingId, finalCandidateId]
+    );
+
+    await this.createNextRecurringOccurrence(client, {
+      id: meetingId,
+      name: meeting.name,
+      hostUserId: meeting.hostUserId,
+      capacity: meeting.capacity,
+      meetingAt: timestamp(meeting.meetingAt),
+      purpose: meeting.purpose,
+      mood: meeting.mood,
+      joinCode: meeting.joinCode,
+      seriesId: meeting.seriesId,
+      recurrenceType: meeting.recurrenceType,
+      recurrenceNextAt: nullableTimestamp(meeting.recurrenceNextAt),
+      nextMeetingId: meeting.nextMeetingId
+    });
   }
 
   private async write<T>(
@@ -1787,6 +1885,28 @@ export class PostgresStore {
   }
 
   async home(userId: string) {
+    // Opportunistically complete any of the caller's own past-due meetings
+    // before reading them, so `status` in the response below is the real,
+    // persisted COMPLETED — not just the `isPastDue` display flag. Each
+    // meeting gets its own short-lived lock+transaction (acquired and
+    // released one at a time, via the exact same `withMeetingLock` every
+    // other write goes through) rather than one big multi-meeting
+    // transaction, so this can never deadlock against any other operation.
+    const staleResult = await this.pool.query<{ id: string }>(
+      `
+        select distinct m.id
+        from meetings m
+        join meeting_members member
+          on member.meeting_id = m.id and member.user_id = $1 and member.status = 'ACTIVE'
+        where m.status in ('RECRUITING', 'VOTING', 'FINAL_SELECTION')
+          and m.meeting_at < now()
+      `,
+      [userId]
+    );
+    for (const { id: staleMeetingId } of staleResult.rows) {
+      await this.withMeetingLock(staleMeetingId, async () => {});
+    }
+
     const result = await this.pool.query<{
       id: string;
       name: string;
@@ -2734,6 +2854,11 @@ export class PostgresStore {
     // proceeds, so the `is_active = true` check below always reflects the
     // real, final state.
     await this.withLocks([...this.placeLockKeys(uniqueIds), `meeting:${meetingId}`], async (client) => {
+      // replaceMyCandidates acquires its meeting lock via `withLocks`
+      // directly (to get place-locks-first ordering), bypassing
+      // `withMeetingLock` — so unlike every other meeting-locked method, it
+      // has to run this itself.
+      await this.autoCompletePastDueMeeting(client, meetingId);
       const context = await client.query<{
         status: MeetingStatus;
         memberId: string;

@@ -1032,17 +1032,25 @@ export class PostgresStore {
     }
   }
 
-  private async withMeetingLock<T>(
-    meetingId: string,
+  // Acquires one or more per-transaction advisory locks, in the exact order
+  // given, then runs `operation`. Callers that need more than one lock MUST
+  // pass keys already in a globally-consistent order (see `placeLockKeys`/
+  // `meetingLockKeys` below: place keys before meeting keys, ascending
+  // within each category) so that two methods locking overlapping key sets
+  // can never form a wait-for cycle.
+  private async withLocks<T>(
+    lockKeys: string[],
     operation: (client: PoolClient) => Promise<T>
   ): Promise<T> {
     const client = await this.pool.connect();
     try {
       await client.query("begin");
-      await client.query(
-        "select pg_advisory_xact_lock(hashtext($1))",
-        [`meeting:${meetingId}`]
-      );
+      const acquired = new Set<string>();
+      for (const key of lockKeys) {
+        if (acquired.has(key)) continue;
+        acquired.add(key);
+        await client.query("select pg_advisory_xact_lock(hashtext($1))", [key]);
+      }
       const result = await operation(client);
       await client.query("commit");
       return result;
@@ -1052,6 +1060,23 @@ export class PostgresStore {
     } finally {
       client.release();
     }
+  }
+
+  private async withMeetingLock<T>(
+    meetingId: string,
+    operation: (client: PoolClient) => Promise<T>
+  ): Promise<T> {
+    return this.withLocks([`meeting:${meetingId}`], operation);
+  }
+
+  // Sorted so that any two callers locking overlapping sets of places always
+  // acquire them in the same relative order (deadlock avoidance).
+  private placeLockKeys(userPlaceIds: string[]): string[] {
+    return [...new Set(userPlaceIds)].sort().map((id) => `place:${id}`);
+  }
+
+  private meetingLockKeys(meetingIds: string[]): string[] {
+    return [...new Set(meetingIds)].sort().map((id) => `meeting:${id}`);
   }
 
   // Precondition: the caller MUST have already updated the source meeting's
@@ -1660,6 +1685,17 @@ export class PostgresStore {
     try {
       await client.query("begin");
 
+      // Acquire the place lock BEFORE discovering which meetings to clean
+      // up. A concurrent `replaceMyCandidates` for this same userPlaceId
+      // acquires this exact lock (before its own meeting lock, see
+      // `replaceMyCandidates`) before inserting any candidate referencing
+      // this place — so whichever of the two gets here first fully
+      // completes before the other proceeds. That closes the race where a
+      // brand-new candidate registration (in a meeting not yet known to
+      // this call) could otherwise slip in after the meeting discovery
+      // query below and be missed entirely.
+      await client.query("select pg_advisory_xact_lock(hashtext($1))", [`place:${userPlaceId}`]);
+
       let meetingIds: string[] = [];
       if (applyToActiveMeetings) {
         const meetingsResult = await client.query<{ id: string }>(
@@ -1673,7 +1709,7 @@ export class PostgresStore {
           `,
           [userId]
         );
-        meetingIds = meetingsResult.rows.map((row) => row.id);
+        meetingIds = [...new Set(meetingsResult.rows.map((row) => row.id))].sort();
         for (const meetingId of meetingIds) {
           await client.query("select pg_advisory_xact_lock(hashtext($1))", [`meeting:${meetingId}`]);
         }
@@ -2691,7 +2727,13 @@ export class PostgresStore {
     if (uniqueIds.length > 2) {
       throw new StoreError(422, "CANDIDATE_LIMIT_EXCEEDED", "후보는 최대 2개까지 선택할 수 있습니다.");
     }
-    await this.withMeetingLock(meetingId, async (client) => {
+    // Place locks are acquired before the meeting lock (see `withLocks`) so
+    // that a concurrent `unregisterUserPlace(userPlaceId)` for one of these
+    // places can never interleave with this transaction: whichever of the
+    // two acquires the place lock first fully completes before the other
+    // proceeds, so the `is_active = true` check below always reflects the
+    // real, final state.
+    await this.withLocks([...this.placeLockKeys(uniqueIds), `meeting:${meetingId}`], async (client) => {
       const context = await client.query<{
         status: MeetingStatus;
         memberId: string;

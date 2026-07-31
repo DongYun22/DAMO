@@ -2029,6 +2029,92 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
     assert.equal(meetingAfter.status, "VOTING");
   });
 
+  it("never leaves a candidate recommendation referencing a deactivated place when unregisterUserPlace and replaceMyCandidates race for the same place", async () => {
+    // Both methods now acquire a `place:{userPlaceId}` advisory lock before
+    // touching that place's candidacy (see `placeLockKeys` in
+    // postgres-store.ts) — unregisterUserPlace acquires it before its
+    // meeting-discovery SELECT even runs. That closes the race the reviewer
+    // flagged on PR #14: previously, unregisterUserPlace computed its list
+    // of meetings to clean up *before* taking any lock, so a candidate
+    // registered in a meeting outside that list — while the deactivation
+    // was still in flight — could survive untouched.
+    //
+    // Whichever of the two calls below actually wins Postgres's lock queue
+    // is not something we control or need to: the invariant under test is
+    // that in EITHER outcome, no candidate_recommendation referencing the
+    // now-inactive place survives. A raw blocking connection holds the
+    // place lock first so both calls are genuinely queued behind it and
+    // genuinely concurrent with each other, not just sequential.
+    const host = await store.signup("host-place-race", "호스트", "pw1234");
+    const meeting = await store.createMeeting(host.user.id, {
+      name: "장소 경합 테스트",
+      capacity: 2,
+      meetingAt: "2026-08-01T10:00:00+09:00",
+      purpose: "DRINK",
+      mood: "TIPSY"
+    });
+    const [place] = await store.upsertPlaces([
+      {
+        id: "place-race-a",
+        naverPlaceId: "naver-place-race-a",
+        name: "아호프",
+        category: "호프",
+        address: "서울",
+        roadAddress: "서울",
+        latitude: 37.5,
+        longitude: 127.0,
+        station: "강남",
+        distanceText: "1분"
+      }
+    ]);
+    const hostPlace = await store.registerUserPlace(host.user.id, place!.naverPlaceId, "DRINK", "TIPSY");
+
+    const blocker = new Client({ connectionString: testDatabaseUrl });
+    await blocker.connect();
+    let unregisterOutcome: PromiseSettledResult<Awaited<ReturnType<typeof store.unregisterUserPlace>>>;
+    let replaceOutcome: PromiseSettledResult<Awaited<ReturnType<typeof store.replaceMyCandidates>>>;
+    try {
+      await blocker.query("begin");
+      // Same lock key/derivation as the store's own
+      // `pg_advisory_xact_lock(hashtext('place:' + id))` calls.
+      await blocker.query("select pg_advisory_xact_lock(hashtext($1))", [`place:${hostPlace.id}`]);
+
+      const unregisterPromise = store.unregisterUserPlace(host.user.id, hostPlace.id, true);
+      const replacePromise = store.replaceMyCandidates(meeting.id, host.user.id, [hostPlace.id]);
+
+      // Let both calls actually reach and block on the place lock before we
+      // release it — see the identical rationale in the recheck test above.
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      await blocker.query("commit");
+
+      [unregisterOutcome, replaceOutcome] = await Promise.allSettled([unregisterPromise, replacePromise]);
+    } finally {
+      await blocker.end();
+    }
+
+    // unregisterUserPlace itself always succeeds — it isn't racing anyone
+    // else to deactivate the same row.
+    assert.equal(unregisterOutcome!.status, "fulfilled");
+    if (unregisterOutcome!.status === "fulfilled") {
+      assert.equal(unregisterOutcome.value.unregistered, true);
+    }
+
+    const places = await store.listUserPlaces(host.user.id);
+    assert.equal(places.some((item) => item.id === hostPlace.id), false);
+
+    // replaceMyCandidates either lost the race (place already deactivated
+    // by the time it acquired the lock, so it must reject) or won it (place
+    // still active, candidate briefly created) — both are valid outcomes of
+    // an unordered race. What must NOT happen is a silent success that
+    // leaves the candidate behind after unregister later runs.
+    if (replaceOutcome!.status === "rejected") {
+      assert.equal((replaceOutcome.reason as { code?: string }).code, "PLACE_NOT_FOUND_IN_MY_PLACES");
+    }
+
+    const candidatesAfter = await store.publicCandidates(meeting.id, host.user.id);
+    assert.equal(candidatesAfter.length, 0);
+  });
+
   it("repeatMeeting creates a RECRUITING next meeting sharing the join code, and rejects every invalid call", async () => {
     const host = await store.signup("host-repeat", "호스트", "pw1234");
     const guest = await store.signup("guest-repeat", "게스트", "pw1234");

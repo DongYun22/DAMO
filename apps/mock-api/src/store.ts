@@ -142,7 +142,7 @@ const nextMonthlyMeetingAt = (meetingAt: string) => {
   return new Date(nextLocal - koreaOffsetMs).toISOString();
 };
 
-const nextRecurringMeetingAt = (
+export const nextRecurringMeetingAt = (
   meetingAt: string,
   recurrenceType: Exclude<RecurrenceType, "CUSTOM">
 ) => {
@@ -972,10 +972,25 @@ export class MockStore {
     const meeting = this.requireMeeting(meetingId);
     if (meeting.joinCode !== joinCode) throw new StoreError(422, "INVALID_JOIN_CODE", "가입 코드가 올바르지 않습니다.");
     if (meeting.status !== "RECRUITING") throw new StoreError(409, "MEETING_NOT_RECRUITING", "이미 투표가 시작된 모임입니다.");
-    const members = this.activeMembers(meetingId);
     const existing = this.members.find((member) => member.meetingId === meetingId && member.userId === userId);
-    if (!existing && members.length >= meeting.capacity) {
-      throw new StoreError(409, "MEETING_CAPACITY_EXCEEDED", "모임 정원이 모두 찼습니다.");
+    // A KICKED member was removed by the host and must never be able to
+    // walk back in with the join code, regardless of capacity.
+    if (existing && existing.status === "KICKED") {
+      throw new StoreError(
+        403,
+        "PREVIOUSLY_KICKED",
+        "모임장에 의해 내보내진 모임에는 다시 가입할 수 없습니다."
+      );
+    }
+    // A brand-new member and a LEFT member rejoining both add a new
+    // ACTIVE seat, so both must be checked against capacity. An already-ACTIVE
+    // member calling joinMeeting again (e.g. a duplicate request) doesn't
+    // change the ACTIVE count, so it's exempt from the check.
+    if (!existing || existing.status !== "ACTIVE") {
+      const members = this.activeMembers(meetingId);
+      if (members.length >= meeting.capacity) {
+        throw new StoreError(409, "MEETING_CAPACITY_EXCEEDED", "모임 정원이 모두 찼습니다.");
+      }
     }
     if (existing) {
       existing.status = "ACTIVE";

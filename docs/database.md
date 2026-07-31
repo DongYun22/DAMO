@@ -7,6 +7,7 @@ DAMO의 React 웹앱은 기존 Express API만 호출한다. Express API가 `DATA
 - 프론트엔드에는 데이터베이스 비밀번호나 Supabase Secret Key를 전달하지 않는다.
 - Supabase Data API를 사용하지 않으며 모든 데이터 변경은 DAMO API를 통한다.
 - 공개 스키마의 DAMO 테이블에는 RLS를 활성화하고 `anon`, `authenticated` 역할의 직접 접근 권한을 제거한다.
+- 모임과 관련된 쓰기 작업은 모임별 advisory lock(`pg_advisory_xact_lock(hashtext('meeting:' || meetingId))`)으로 직렬화한다. 서로 다른 모임의 쓰기는 서로 막지 않는다.
 - 중요한 데이터 변경은 PostgreSQL 트랜잭션 안에서 처리한다.
 
 ## 2. 환경변수

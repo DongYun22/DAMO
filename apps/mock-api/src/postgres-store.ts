@@ -26,6 +26,7 @@ import { createDatabasePool } from "./database.js";
 import { webBaseUrl } from "./config.js";
 import {
   MockStore,
+  SESSION_TTL_HOURS,
   StoreError,
   nextRecurringMeetingAt,
   type CandidateRecord,
@@ -1400,8 +1401,12 @@ export class PostgresStore {
   async userIdForToken(token: string | undefined) {
     if (!token) throw new StoreError(401, "INVALID_TOKEN", "로그인 정보가 만료되었습니다.");
     const result = await this.pool.query<{ userId: string }>(
-      `select user_id as "userId" from auth_sessions where access_token = $1`,
-      [token]
+      `
+        select user_id as "userId"
+        from auth_sessions
+        where access_token = $1 and created_at > now() - make_interval(hours => $2)
+      `,
+      [token, SESSION_TTL_HOURS]
     );
     const userId = result.rows[0]?.userId;
     if (!userId) throw new StoreError(401, "INVALID_TOKEN", "로그인 정보가 만료되었습니다.");

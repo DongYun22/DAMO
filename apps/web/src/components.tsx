@@ -1,10 +1,13 @@
 import {
   ArrowLeft,
+  Beer,
+  BookOpen,
   Check,
   ChevronDown,
   ChevronRight,
   ChevronUp,
   CircleUserRound,
+  Coffee,
   Home,
   Map,
   MapPin,
@@ -12,7 +15,9 @@ import {
   Repeat2,
   Search,
   Sparkles,
+  Store,
   UsersRound,
+  UtensilsCrossed,
   X
 } from "lucide-react";
 import {
@@ -43,6 +48,17 @@ const RECURRENCE_SUMMARY_LABELS: Record<RecurrenceType, string> = {
   WEEKLY: "매주 만나요",
   MONTHLY: "매달 만나요",
   CUSTOM: "정기 모임이에요"
+};
+
+// PlaceThumbnail's fallback icon when there's no photo. Purpose-specific
+// icons only apply where a place has one confirmed purpose (a saved
+// UserPlace) — map search results and shared meeting candidates fall back
+// to the generic Store icon since they don't have a single settled purpose.
+const PURPOSE_ICONS: Record<Purpose, typeof Store> = {
+  STUDY: BookOpen,
+  CAFE: Coffee,
+  MEAL: UtensilsCrossed,
+  DRINK: Beer
 };
 
 export const formatMeetingAt = (value: string) =>
@@ -306,10 +322,19 @@ export function SecondaryButton({
   );
 }
 
-export function PlaceThumbnail({ place, large = false }: { place: Place; large?: boolean }) {
+export function PlaceThumbnail({
+  place,
+  purpose,
+  large = false
+}: {
+  place: Place;
+  purpose?: Purpose;
+  large?: boolean;
+}) {
+  const FallbackIcon = purpose ? PURPOSE_ICONS[purpose] : Store;
   return (
     <span className={`place-thumbnail ${large ? "place-thumbnail--large" : ""}`}>
-      {place.imageUrl ? <img src={place.imageUrl} alt="" /> : <MapPin size={22} />}
+      {place.imageUrl ? <img src={place.imageUrl} alt="" /> : <FallbackIcon size={22} />}
     </span>
   );
 }
@@ -378,7 +403,7 @@ export function UserPlaceRow({
       onClick={onClick}
       aria-pressed={selected}
     >
-      <PlaceThumbnail place={item.place} />
+      <PlaceThumbnail place={item.place} purpose={item.purpose} />
       <div className="place-meta">
         <strong>{item.place.name}</strong>
         <span>

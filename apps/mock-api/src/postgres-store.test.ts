@@ -3,6 +3,23 @@ import { after, before, beforeEach, describe, it, mock } from "node:test";
 import { Client } from "pg";
 import { PostgresStore } from "./postgres-store.js";
 
+// Fixture meeting dates must stay safely in the future relative to whenever
+// the suite actually *runs* — not a fixed calendar date. autoCompletePastDueMeeting
+// (see postgres-store.ts) transitions any RECRUITING/VOTING/FINAL_SELECTION
+// meeting whose meetingAt has passed, so a hardcoded near-future date quietly
+// turns into a past one (and breaks every test relying on that meeting
+// staying open) once real time catches up — which is exactly what happened
+// to this file's old hardcoded "2026-08-*" literals. Every offset below is
+// relative to a base 60 days out, computed at test-run time.
+const FIXTURE_BASE_MS = Date.now() + 60 * 24 * 60 * 60 * 1000;
+const futureMeetingAt = (dayOffset: number, time = "10:00:00") => {
+  const date = new Date(FIXTURE_BASE_MS + dayOffset * 24 * 60 * 60 * 1000);
+  const y = date.getUTCFullYear();
+  const m = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const d = String(date.getUTCDate()).padStart(2, "0");
+  return `${y}-${m}-${d}T${time}+09:00`;
+};
+
 const testDatabaseUrl = process.env.TEST_DATABASE_URL;
 // Captured before `before()` overwrites process.env.DATABASE_URL with
 // testDatabaseUrl, so we can still detect "TEST_DATABASE_URL is secretly
@@ -166,7 +183,7 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
     const meeting = await store.createMeeting(host.user.id, {
       name: "락 테스트",
       capacity: 4,
-      meetingAt: "2026-08-01T10:00:00+09:00",
+      meetingAt: futureMeetingAt(0),
       purpose: "CAFE",
       mood: "FUN"
     });
@@ -247,7 +264,7 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
     const meeting = await store.createMeeting(host.user.id, {
       name: "투표 생성 테스트",
       capacity: 2,
-      meetingAt: "2026-08-01T10:00:00+09:00",
+      meetingAt: futureMeetingAt(0),
       purpose: "MEAL",
       mood: "FUN"
     });
@@ -331,7 +348,7 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
     const meeting = await store.createMeeting(host.user.id, {
       name: "결과 테스트",
       capacity: 4,
-      meetingAt: "2026-08-01T10:00:00+09:00",
+      meetingAt: futureMeetingAt(0),
       purpose: "MEAL",
       mood: "FUN"
     });
@@ -416,7 +433,7 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
     const meeting = await store.createMeeting(host.user.id, {
       name: "결과 경합 테스트",
       capacity: 4,
-      meetingAt: "2026-08-01T10:00:00+09:00",
+      meetingAt: futureMeetingAt(0),
       purpose: "MEAL",
       mood: "FUN"
     });
@@ -534,7 +551,7 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
     const meeting = await store.createMeeting(host.user.id, {
       name: "종료 테스트",
       capacity: 2,
-      meetingAt: "2026-08-01T10:00:00+09:00",
+      meetingAt: futureMeetingAt(0),
       purpose: "CAFE",
       mood: "QUIET"
     });
@@ -601,7 +618,7 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
     const meeting = await store.createMeeting(host.user.id, {
       name: "동점 종료 테스트",
       capacity: 2,
-      meetingAt: "2026-08-01T10:00:00+09:00",
+      meetingAt: futureMeetingAt(0),
       purpose: "CAFE",
       mood: "QUIET"
     });
@@ -673,7 +690,7 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
     const meetingA = await store.createMeeting(host.user.id, {
       name: "반복 테스트 1회차",
       capacity: 2,
-      meetingAt: "2026-08-01T10:00:00+09:00",
+      meetingAt: futureMeetingAt(0),
       purpose: "CAFE",
       mood: "QUIET"
     });
@@ -725,7 +742,7 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
     const meetingB = await store.repeatMeeting(meetingA.id, host.user.id, {
       name: "반복 테스트 2회차",
       capacity: 2,
-      meetingAt: "2026-08-08T10:00:00+09:00",
+      meetingAt: futureMeetingAt(7),
       purpose: "CAFE",
       mood: "QUIET",
       memberIds: [hostMemberA.id],
@@ -793,7 +810,7 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
         store.repeatMeeting(meetingB.id, host.user.id, {
           name: "반복 테스트 3회차",
           capacity: 2,
-          meetingAt: "2026-08-15T10:00:00+09:00",
+          meetingAt: futureMeetingAt(14),
           purpose: "CAFE",
           mood: "QUIET",
           memberIds: [hostMemberA.id],
@@ -809,7 +826,7 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
     const meeting = await store.createMeeting(host.user.id, {
       name: "최종선택 테스트",
       capacity: 2,
-      meetingAt: "2026-08-01T10:00:00+09:00",
+      meetingAt: futureMeetingAt(0),
       purpose: "DRINK",
       mood: "TIPSY"
     });
@@ -881,7 +898,7 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
     const meetingA = await store.createMeeting(host.user.id, {
       name: "최종선택 반복 테스트 1회차",
       capacity: 2,
-      meetingAt: "2026-08-01T10:00:00+09:00",
+      meetingAt: futureMeetingAt(0),
       purpose: "CAFE",
       mood: "QUIET"
     });
@@ -933,7 +950,7 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
     const meetingB = await store.repeatMeeting(meetingA.id, host.user.id, {
       name: "최종선택 반복 테스트 2회차",
       capacity: 2,
-      meetingAt: "2026-08-08T10:00:00+09:00",
+      meetingAt: futureMeetingAt(7),
       purpose: "CAFE",
       mood: "QUIET",
       memberIds: [hostMemberA.id],
@@ -1024,7 +1041,7 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
         store.repeatMeeting(meetingB.id, host.user.id, {
           name: "최종선택 반복 테스트 3회차",
           capacity: 2,
-          meetingAt: "2026-08-15T10:00:00+09:00",
+          meetingAt: futureMeetingAt(14),
           purpose: "CAFE",
           mood: "QUIET",
           memberIds: [hostMemberA.id],
@@ -1039,7 +1056,7 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
     const meeting = await store.createMeeting(host.user.id, {
       name: "조회 테스트",
       capacity: 2,
-      meetingAt: "2026-08-01T10:00:00+09:00",
+      meetingAt: futureMeetingAt(0),
       purpose: "CAFE",
       mood: "QUIET"
     });
@@ -1060,7 +1077,7 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
     const meeting = await store.createMeeting(host.user.id, {
       name: "정원 테스트",
       capacity: 2,
-      meetingAt: "2026-08-01T10:00:00+09:00",
+      meetingAt: futureMeetingAt(0),
       purpose: "CAFE",
       mood: "QUIET"
     });
@@ -1082,7 +1099,7 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
     const meeting = await store.createMeeting(host.user.id, {
       name: "삭제 테스트",
       capacity: 2,
-      meetingAt: "2026-08-01T10:00:00+09:00",
+      meetingAt: futureMeetingAt(0),
       purpose: "CAFE",
       mood: "QUIET"
     });
@@ -1101,7 +1118,7 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
     const meeting = await store.createMeeting(host.user.id, {
       name: "삭제 테스트",
       capacity: 2,
-      meetingAt: "2026-08-01T10:00:00+09:00",
+      meetingAt: futureMeetingAt(0),
       purpose: "STUDY",
       mood: "QUIET"
     });
@@ -1127,7 +1144,7 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
     const meeting = await store.createMeeting(host.user.id, {
       name: "탈퇴 테스트",
       capacity: 3,
-      meetingAt: "2026-08-01T10:00:00+09:00",
+      meetingAt: futureMeetingAt(0),
       purpose: "STUDY",
       mood: "QUIET"
     });
@@ -1151,7 +1168,7 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
     const meeting = await store.createMeeting(host.user.id, {
       name: "강퇴 테스트",
       capacity: 3,
-      meetingAt: "2026-08-01T10:00:00+09:00",
+      meetingAt: futureMeetingAt(0),
       purpose: "MEAL",
       mood: "FUN"
     });
@@ -1174,7 +1191,7 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
     const meeting = await store.createMeeting(host.user.id, {
       name: "가입 테스트",
       capacity: 2,
-      meetingAt: "2026-08-01T10:00:00+09:00",
+      meetingAt: futureMeetingAt(0),
       purpose: "STUDY",
       mood: "BUSINESS"
     });
@@ -1205,7 +1222,7 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
     const meeting = await store.createMeeting(host.user.id, {
       name: "재입장 정원 테스트",
       capacity: 2,
-      meetingAt: "2026-08-01T10:00:00+09:00",
+      meetingAt: futureMeetingAt(0),
       purpose: "CAFE",
       mood: "FUN"
     });
@@ -1231,7 +1248,7 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
     const meeting = await store.createMeeting(host.user.id, {
       name: "재입장 여유 테스트",
       capacity: 3,
-      meetingAt: "2026-08-01T10:00:00+09:00",
+      meetingAt: futureMeetingAt(0),
       purpose: "CAFE",
       mood: "FUN"
     });
@@ -1261,7 +1278,7 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
     const meeting = await store.createMeeting(host.user.id, {
       name: "강퇴 재입장 테스트",
       capacity: 3,
-      meetingAt: "2026-08-01T10:00:00+09:00",
+      meetingAt: futureMeetingAt(0),
       purpose: "CAFE",
       mood: "FUN"
     });
@@ -1287,7 +1304,7 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
     const meeting = await store.createMeeting(host.user.id, {
       name: "생성 테스트",
       capacity: 3,
-      meetingAt: "2026-08-01T10:00:00+09:00",
+      meetingAt: futureMeetingAt(0),
       purpose: "DRINK",
       mood: "TIPSY"
     });
@@ -1321,14 +1338,14 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
       first = await store.createMeeting(host.user.id, {
         name: "충돌 테스트 1",
         capacity: 2,
-        meetingAt: "2026-08-01T10:00:00+09:00",
+        meetingAt: futureMeetingAt(0),
         purpose: "CAFE",
         mood: "FUN"
       });
       second = await store.createMeeting(host.user.id, {
         name: "충돌 테스트 2",
         capacity: 2,
-        meetingAt: "2026-08-01T10:00:00+09:00",
+        meetingAt: futureMeetingAt(0),
         purpose: "CAFE",
         mood: "FUN"
       });
@@ -1358,7 +1375,7 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
     const meeting = await store.createMeeting(host.user.id, {
       name: "장소수정 테스트",
       capacity: 2,
-      meetingAt: "2026-08-01T10:00:00+09:00",
+      meetingAt: futureMeetingAt(0),
       purpose: "CAFE",
       mood: "QUIET"
     });
@@ -1398,14 +1415,14 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
     const meetingA = await store.createMeeting(host.user.id, {
       name: "장소수정 다중 테스트 A",
       capacity: 2,
-      meetingAt: "2026-08-01T10:00:00+09:00",
+      meetingAt: futureMeetingAt(0),
       purpose: "CAFE",
       mood: "QUIET"
     });
     const meetingB = await store.createMeeting(host.user.id, {
       name: "장소수정 다중 테스트 B",
       capacity: 2,
-      meetingAt: "2026-08-02T10:00:00+09:00",
+      meetingAt: futureMeetingAt(1),
       purpose: "CAFE",
       mood: "QUIET"
     });
@@ -1416,7 +1433,7 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
     const meetingC = await store.createMeeting(host.user.id, {
       name: "장소수정 다중 테스트 C",
       capacity: 2,
-      meetingAt: "2026-08-03T10:00:00+09:00",
+      meetingAt: futureMeetingAt(2),
       purpose: "CAFE",
       mood: "QUIET"
     });
@@ -1599,7 +1616,7 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
     const meeting = await store.createMeeting(host.user.id, {
       name: "장소수정 롤백 테스트",
       capacity: 2,
-      meetingAt: "2026-08-01T10:00:00+09:00",
+      meetingAt: futureMeetingAt(0),
       purpose: "CAFE",
       mood: "QUIET"
     });
@@ -1654,7 +1671,7 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
     const meeting = await store.createMeeting(host.user.id, {
       name: "등록해제 테스트",
       capacity: 2,
-      meetingAt: "2026-08-01T10:00:00+09:00",
+      meetingAt: futureMeetingAt(0),
       purpose: "DRINK",
       mood: "TIPSY"
     });
@@ -1699,7 +1716,7 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
     const meeting = await store.createMeeting(host.user.id, {
       name: "등록해제 미적용 테스트",
       capacity: 2,
-      meetingAt: "2026-08-01T10:00:00+09:00",
+      meetingAt: futureMeetingAt(0),
       purpose: "DRINK",
       mood: "TIPSY"
     });
@@ -1760,21 +1777,21 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
     const meetingA = await store.createMeeting(host.user.id, {
       name: "등록해제 다중 테스트 A",
       capacity: 2,
-      meetingAt: "2026-08-01T10:00:00+09:00",
+      meetingAt: futureMeetingAt(0),
       purpose: "DRINK",
       mood: "TIPSY"
     });
     const meetingB = await store.createMeeting(host.user.id, {
       name: "등록해제 다중 테스트 B",
       capacity: 2,
-      meetingAt: "2026-08-02T10:00:00+09:00",
+      meetingAt: futureMeetingAt(1),
       purpose: "DRINK",
       mood: "TIPSY"
     });
     const meetingC = await store.createMeeting(other.user.id, {
       name: "등록해제 다중 테스트 C",
       capacity: 2,
-      meetingAt: "2026-08-03T10:00:00+09:00",
+      meetingAt: futureMeetingAt(2),
       purpose: "DRINK",
       mood: "TIPSY"
     });
@@ -1882,7 +1899,7 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
     const meeting = await store.createMeeting(host.user.id, {
       name: "등록해제 재시도 테스트",
       capacity: 2,
-      meetingAt: "2026-08-01T10:00:00+09:00",
+      meetingAt: futureMeetingAt(0),
       purpose: "DRINK",
       mood: "TIPSY"
     });
@@ -1958,7 +1975,7 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
     const meeting = await store.createMeeting(host.user.id, {
       name: "등록해제 경합 테스트",
       capacity: 2,
-      meetingAt: "2026-08-01T10:00:00+09:00",
+      meetingAt: futureMeetingAt(0),
       purpose: "DRINK",
       mood: "TIPSY"
     });
@@ -2049,7 +2066,7 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
     const meeting = await store.createMeeting(host.user.id, {
       name: "장소 경합 테스트",
       capacity: 2,
-      meetingAt: "2026-08-01T10:00:00+09:00",
+      meetingAt: futureMeetingAt(0),
       purpose: "DRINK",
       mood: "TIPSY"
     });
@@ -2121,7 +2138,7 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
     const meetingA = await store.createMeeting(host.user.id, {
       name: "다시 만나기 1회차",
       capacity: 2,
-      meetingAt: "2026-08-01T10:00:00+09:00",
+      meetingAt: futureMeetingAt(0),
       purpose: "CAFE",
       mood: "QUIET"
     });
@@ -2173,7 +2190,7 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
         store.repeatMeeting(meetingA.id, host.user.id, {
           name: "다시 만나기 2회차",
           capacity: 5,
-          meetingAt: "2026-08-08T10:00:00+09:00",
+          meetingAt: futureMeetingAt(7),
           purpose: "CAFE",
           mood: "QUIET",
           memberIds: []
@@ -2201,7 +2218,7 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
         store.repeatMeeting(meetingA.id, guest.user.id, {
           name: "다시 만나기 2회차",
           capacity: 5,
-          meetingAt: "2026-08-08T10:00:00+09:00",
+          meetingAt: futureMeetingAt(7),
           purpose: "CAFE",
           mood: "QUIET",
           memberIds: [hostMemberA.id, guestMemberA.id]
@@ -2215,7 +2232,7 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
         store.repeatMeeting(meetingA.id, host.user.id, {
           name: "다시 만나기 2회차",
           capacity: 5,
-          meetingAt: "2026-08-08T10:00:00+09:00",
+          meetingAt: futureMeetingAt(7),
           purpose: "CAFE",
           mood: "QUIET",
           memberIds: [guestMemberA.id]
@@ -2230,7 +2247,7 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
         store.repeatMeeting(meetingA.id, host.user.id, {
           name: "다시 만나기 2회차",
           capacity: 5,
-          meetingAt: "2026-08-08T10:00:00+09:00",
+          meetingAt: futureMeetingAt(7),
           purpose: "CAFE",
           mood: "QUIET",
           memberIds: [hostMemberA.id, "00000000-0000-0000-0000-000000000000"]
@@ -2244,7 +2261,7 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
         store.repeatMeeting(meetingA.id, host.user.id, {
           name: "다시 만나기 2회차",
           capacity: 1,
-          meetingAt: "2026-08-08T10:00:00+09:00",
+          meetingAt: futureMeetingAt(7),
           purpose: "CAFE",
           mood: "QUIET",
           memberIds: [hostMemberA.id, guestMemberA.id]
@@ -2259,11 +2276,11 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
         store.repeatMeeting(meetingA.id, host.user.id, {
           name: "다시 만나기 2회차",
           capacity: 5,
-          meetingAt: "2026-08-08T10:00:00+09:00",
+          meetingAt: futureMeetingAt(7),
           purpose: "CAFE",
           mood: "QUIET",
           memberIds: [hostMemberA.id, guestMemberA.id],
-          recurrence: { type: "CUSTOM", customNextMeetingAt: "2026-08-08T10:00:00+09:00" }
+          recurrence: { type: "CUSTOM", customNextMeetingAt: futureMeetingAt(7) }
         }),
       (error: unknown) => (error as { code?: string }).code === "INVALID_CUSTOM_RECURRENCE_DATE"
     );
@@ -2272,7 +2289,7 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
     const meetingB = await store.repeatMeeting(meetingA.id, host.user.id, {
       name: "다시 만나기 2회차",
       capacity: 5,
-      meetingAt: "2026-08-08T10:00:00+09:00",
+      meetingAt: futureMeetingAt(7),
       purpose: "CAFE",
       mood: "QUIET",
       memberIds: [hostMemberA.id, guestMemberA.id]
@@ -2294,7 +2311,7 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
         store.repeatMeeting(meetingA.id, host.user.id, {
           name: "다시 만나기 3회차",
           capacity: 5,
-          meetingAt: "2026-08-15T10:00:00+09:00",
+          meetingAt: futureMeetingAt(14),
           purpose: "CAFE",
           mood: "QUIET",
           memberIds: [hostMemberA.id, guestMemberA.id]
@@ -2332,7 +2349,7 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
     const meeting = await store.createMeeting(host.user.id, {
       name: "단독 1위 자동완료 테스트",
       capacity: 2,
-      meetingAt: "2026-08-01T10:00:00+09:00",
+      meetingAt: futureMeetingAt(0),
       purpose: "CAFE",
       mood: "QUIET"
     });
@@ -2407,7 +2424,7 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
     const meeting = await store.createMeeting(host.user.id, {
       name: "동점 자동완료 테스트",
       capacity: 2,
-      meetingAt: "2026-08-01T10:00:00+09:00",
+      meetingAt: futureMeetingAt(0),
       purpose: "CAFE",
       mood: "QUIET"
     });
@@ -2482,7 +2499,7 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
     const meeting = await store.createMeeting(host.user.id, {
       name: "무득표 자동완료 테스트",
       capacity: 2,
-      meetingAt: "2026-08-01T10:00:00+09:00",
+      meetingAt: futureMeetingAt(0),
       purpose: "CAFE",
       mood: "QUIET"
     });
@@ -2545,7 +2562,7 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
     const meeting = await store.createMeeting(host.user.id, {
       name: "차단 테스트",
       capacity: 3,
-      meetingAt: "2026-08-01T10:00:00+09:00",
+      meetingAt: futureMeetingAt(0),
       purpose: "CAFE",
       mood: "QUIET"
     });
@@ -2656,7 +2673,7 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
     const meeting = await store.createMeeting(host.user.id, {
       name: "동시성 자동완료 테스트",
       capacity: 2,
-      meetingAt: "2026-08-01T10:00:00+09:00",
+      meetingAt: futureMeetingAt(0),
       purpose: "CAFE",
       mood: "QUIET"
     });
@@ -2744,5 +2761,101 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
     } finally {
       await blocker.end();
     }
+  });
+
+  it("updates a meeting while RECRUITING, enforcing host-only and capacity, and rejects once voting starts", async () => {
+    const host = await store.signup("host-update", "호스트", "pw1234");
+    const guest = await store.signup("guest-update", "게스트", "pw1234");
+    const meeting = await store.createMeeting(host.user.id, {
+      name: "수정 전 모임",
+      capacity: 4,
+      meetingAt: futureMeetingAt(0),
+      purpose: "CAFE",
+      mood: "QUIET"
+    });
+    await store.joinMeeting(guest.user.id, meeting.id, meeting.joinCode!, "게스트닉");
+
+    await assert.rejects(
+      () =>
+        store.updateMeeting(meeting.id, guest.user.id, {
+          name: "수정 시도",
+          capacity: 4,
+          meetingAt: futureMeetingAt(4),
+          purpose: "CAFE",
+          mood: "QUIET"
+        }),
+      (error: unknown) => (error as { code?: string }).code === "HOST_ONLY"
+    );
+
+    await assert.rejects(
+      () =>
+        store.updateMeeting(meeting.id, host.user.id, {
+          name: "수정 시도",
+          capacity: 1,
+          meetingAt: futureMeetingAt(4),
+          purpose: "CAFE",
+          mood: "QUIET"
+        }),
+      (error: unknown) => (error as { code?: string }).code === "CAPACITY_TOO_SMALL"
+    );
+
+    const updated = await store.updateMeeting(meeting.id, host.user.id, {
+      name: "수정된 모임명",
+      capacity: 5,
+      meetingAt: futureMeetingAt(4, "11:30:00"),
+      purpose: "DRINK",
+      mood: "TIPSY"
+    });
+    assert.equal(updated.name, "수정된 모임명");
+    assert.equal(updated.capacity, 5);
+    assert.equal(updated.purpose, "DRINK");
+    assert.equal(updated.mood, "TIPSY");
+    assert.equal(updated.meetingAt, new Date(futureMeetingAt(4, "11:30:00")).toISOString());
+
+    const [placeA] = await store.upsertPlaces([
+      {
+        id: "place-update-a",
+        naverPlaceId: "naver-update-a",
+        name: "가카페",
+        category: "카페",
+        address: "서울",
+        roadAddress: "서울",
+        latitude: 37.5,
+        longitude: 127.0,
+        station: "강남",
+        distanceText: "1분"
+      }
+    ]);
+    const [placeB] = await store.upsertPlaces([
+      {
+        id: "place-update-b",
+        naverPlaceId: "naver-update-b",
+        name: "나카페",
+        category: "카페",
+        address: "서울",
+        roadAddress: "서울",
+        latitude: 37.6,
+        longitude: 127.1,
+        station: "역삼",
+        distanceText: "2분"
+      }
+    ]);
+    const hostPlace = await store.registerUserPlace(host.user.id, placeA!.naverPlaceId, "DRINK", "TIPSY");
+    const guestPlace = await store.registerUserPlace(guest.user.id, placeB!.naverPlaceId, "DRINK", "TIPSY");
+    await store.replaceMyCandidates(meeting.id, host.user.id, [hostPlace.id]);
+    await store.replaceMyCandidates(meeting.id, guest.user.id, [guestPlace.id]);
+    await store.createVote(meeting.id, host.user.id);
+
+    await assert.rejects(
+      () =>
+        store.updateMeeting(meeting.id, host.user.id, {
+          name: "투표 중 수정 시도",
+          capacity: 5,
+          meetingAt: futureMeetingAt(4, "11:30:00"),
+          purpose: "DRINK",
+          mood: "TIPSY"
+        }),
+      (error: unknown) => (error as { code?: string }).code === "MEETING_NOT_RECRUITING"
+    );
   });
 });

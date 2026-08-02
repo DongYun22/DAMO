@@ -82,6 +82,68 @@ describe("DAMO mock API", () => {
     assert.notEqual(anotherBody.data.joinCode, body.data.joinCode);
   });
 
+  it("updates a meeting while RECRUITING, enforcing host-only and capacity, and rejects once voting starts", async () => {
+    await store.reset();
+
+    // meeting-1: RECRUITING, host user-1, 3 active members (seed data).
+    const nonHost = await request("/api/v1/meetings/meeting-1", {
+      method: "PATCH",
+      headers: { authorization: "Bearer mock-token-user-2" },
+      body: JSON.stringify({
+        name: "수정 시도",
+        capacity: 4,
+        meetingAt: "2026-08-21T10:00:00+09:00",
+        purpose: "CAFE",
+        mood: "QUIET"
+      })
+    });
+    assert.equal(nonHost.status, 403);
+
+    const tooSmall = await request("/api/v1/meetings/meeting-1", {
+      method: "PATCH",
+      body: JSON.stringify({
+        name: "수정 시도",
+        capacity: 2,
+        meetingAt: "2026-08-21T10:00:00+09:00",
+        purpose: "CAFE",
+        mood: "QUIET"
+      })
+    });
+    assert.equal(tooSmall.status, 422);
+
+    const updated = await request("/api/v1/meetings/meeting-1", {
+      method: "PATCH",
+      body: JSON.stringify({
+        name: "수정된 모임명",
+        capacity: 5,
+        meetingAt: "2026-08-21T11:30:00+09:00",
+        purpose: "DRINK",
+        mood: "TIPSY"
+      })
+    });
+    assert.equal(updated.status, 200);
+    const updatedBody = await updated.json();
+    assert.equal(updatedBody.data.name, "수정된 모임명");
+    assert.equal(updatedBody.data.capacity, 5);
+    assert.equal(updatedBody.data.purpose, "DRINK");
+    assert.equal(updatedBody.data.mood, "TIPSY");
+
+    // meeting-2: VOTING, host user-2 (seed data) — editing must be blocked
+    // once a vote has started, same as join/leave/kick/candidate changes.
+    const afterVoteStart = await request("/api/v1/meetings/meeting-2", {
+      method: "PATCH",
+      headers: { authorization: "Bearer mock-token-user-2" },
+      body: JSON.stringify({
+        name: "투표 중 수정 시도",
+        capacity: 4,
+        meetingAt: "2026-08-21T10:00:00+09:00",
+        purpose: "CAFE",
+        mood: "QUIET"
+      })
+    });
+    assert.equal(afterVoteStart.status, 409);
+  });
+
   it("blocks a KICKED member from rejoining a meeting via join code", async () => {
     await store.reset();
     const created = await request("/api/v1/meetings", {

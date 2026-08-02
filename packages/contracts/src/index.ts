@@ -189,6 +189,8 @@ export interface CreateMeetingInput {
   mood: Mood;
 }
 
+export type UpdateMeetingInput = CreateMeetingInput;
+
 export interface RepeatMeetingInput extends CreateMeetingInput {
   memberIds: string[];
   recurrence?: MeetingRecurrence | null;

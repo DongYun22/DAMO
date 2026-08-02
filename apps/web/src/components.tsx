@@ -9,6 +9,7 @@ import {
   Map,
   MapPin,
   Plus,
+  Repeat2,
   Search,
   Sparkles,
   UsersRound,
@@ -29,6 +30,7 @@ import type {
   Mood,
   Place,
   Purpose,
+  RecurrenceType,
   UserPlace
 } from "@damo/contracts";
 import {
@@ -36,6 +38,12 @@ import {
   PURPOSE_LABELS,
   STATUS_LABELS
 } from "@damo/contracts";
+
+const RECURRENCE_SUMMARY_LABELS: Record<RecurrenceType, string> = {
+  WEEKLY: "매주 만나요",
+  MONTHLY: "매달 만나요",
+  CUSTOM: "정기 모임이에요"
+};
 
 export const formatMeetingAt = (value: string) =>
   new Intl.DateTimeFormat("ko-KR", {
@@ -434,6 +442,12 @@ export function MeetingCard({ meeting }: { meeting: MeetingSummary }) {
           <strong>{meeting.role === "HOST" ? "모임장" : "모임원"}</strong>
         )}
       </div>
+      {meeting.recurrence ? (
+        <p className="meeting-card__recurrence">
+          <Repeat2 size={14} />
+          {RECURRENCE_SUMMARY_LABELS[meeting.recurrence.type]}
+        </p>
+      ) : null}
     </Link>
   );
 }

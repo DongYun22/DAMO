@@ -206,8 +206,8 @@ export const PURPOSE_LABELS: Record<Purpose, string> = {
 export const MOOD_LABELS: Record<Mood, string> = {
   FUN: "즐거운",
   QUIET: "조용한",
-  BUSINESS: "비즈니스",
-  TIPSY: "알딸딸"
+  BUSINESS: "격식있는",
+  TIPSY: "취기있는"
 };
 
 export const STATUS_LABELS: Record<MeetingStatus, string> = {

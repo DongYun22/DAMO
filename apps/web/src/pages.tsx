@@ -2163,6 +2163,7 @@ export function MeetingDetailPage() {
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [kickMemberId, setKickMemberId] = useState("");
+  const [membersExpanded, setMembersExpanded] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -2193,6 +2194,9 @@ export function MeetingDetailPage() {
   const isHost = meeting.role === "HOST";
   const canRepeatMeeting =
     meeting.status === "COMPLETED" || meeting.isPastDue;
+  const visibleMembers = membersExpanded
+    ? meeting.members
+    : meeting.members.slice(0, 3);
 
   const copyInvite = async () => {
     const shareUrl = `${window.location.origin}/meetings/join?meetingId=${meetingId}`;
@@ -2334,8 +2338,8 @@ export function MeetingDetailPage() {
 
       <section>
         <SectionTitle title="모임원" count={meeting.members.length} />
-        <div className="member-list">
-          {meeting.members.map((member) => (
+        <div className="member-list" id="meeting-members">
+          {visibleMembers.map((member) => (
             <div className="member-row" key={member.id}>
               <span className="member-row__avatar">{member.meetingNickname.slice(0, 1)}</span>
               <div>
@@ -2352,6 +2356,17 @@ export function MeetingDetailPage() {
             </div>
           ))}
         </div>
+        {meeting.members.length > 3 ? (
+          <button
+            type="button"
+            className="member-toggle"
+            aria-controls="meeting-members"
+            aria-expanded={membersExpanded}
+            onClick={() => setMembersExpanded((expanded) => !expanded)}
+          >
+            {membersExpanded ? "접어보기" : "펼쳐보기"}
+          </button>
+        ) : null}
       </section>
 
       <div className="detail-actions">

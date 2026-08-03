@@ -240,7 +240,7 @@ export function LoginPage() {
           </PrimaryButton>
         </form>
 
-        <div className="auth-divider"><span>또는 OAuth 목 로그인</span></div>
+        <div className="auth-divider"><span>또는 소셜 로그인</span></div>
         <div className="oauth-list">
           <button className="oauth-button oauth-button--kakao" type="button" onClick={() => oauth("kakao")}>
             <span>K</span> 카카오로 계속
@@ -266,7 +266,7 @@ export function OAuthCallbackPage() {
   useEffect(() => {
     const token = params.get("accessToken");
     if (!token) {
-      setError("OAuth 목 토큰을 받지 못했습니다.");
+      setError("OAuth 토큰을 받지 못했습니다.");
       return;
     }
     void acceptOAuthToken(token)
@@ -364,7 +364,6 @@ export function HomePage() {
           <div className="profile-sheet__avatar">{user.nickname.slice(0, 1)}</div>
           <strong>{user.nickname}</strong>
           <span>{user.email ?? "이메일 없음"}</span>
-          <small>{user.loginProvider} 계정</small>
         </div>
         <SecondaryButton
           type="button"
@@ -975,7 +974,7 @@ export function MyPlacesPage() {
       <Modal
         open={Boolean(removing)}
         title="장소 등록을 해제할까요?"
-        description="투표가 생성된 모임의 고정 후보에는 영향을 주지 않습니다."
+        description="투표가 생성된 모임의 고정 후보에는 영향을 주지 않아요."
         onClose={() => setRemoving(null)}
       >
         <div className="modal-actions modal-actions--stack">
@@ -2397,7 +2396,7 @@ export function MeetingDetailPage() {
       <Modal
         open={startOpen}
         title="투표를 시작할까요?"
-        description={`후보 ${meeting.candidates.length}곳이 고정되고 모든 모임원에게 투표 알림이 표시됩니다.`}
+        description={`후보 ${meeting.candidates.length}곳이 고정되고 모든 모임원에게 투표 알림이 표시돼요.`}
         onClose={() => setStartOpen(false)}
       >
         <div className="modal-actions">
@@ -2453,7 +2452,7 @@ export function MeetingDetailPage() {
       <Modal
         open={deleteOpen}
         title="모임을 정말 삭제할까요?"
-        description="공유 링크와 가입 코드는 즉시 사용할 수 없게 됩니다. 참여자와 투표 기록도 화면에서 사라집니다."
+        description="공유 링크와 가입 코드는 즉시 사용할 수 없게 돼요. 참여자와 투표 기록도 화면에서 사라져요."
         onClose={() => setDeleteOpen(false)}
       >
         <div className="danger-box">
@@ -2471,7 +2470,7 @@ export function MeetingDetailPage() {
       <Modal
         open={Boolean(kickMemberId)}
         title="모임원을 내보낼까요?"
-        description="이 모임원이 추천한 장소도 후보에서 빠집니다. 다른 추천자가 남아 있으면 후보는 유지됩니다."
+        description="이 모임원이 추천한 장소도 후보에서 빠져요. 다른 추천자가 남아 있으면 후보는 유지돼요."
         onClose={() => setKickMemberId("")}
       >
         <div className="modal-actions">
@@ -2572,7 +2571,7 @@ export function VotePage() {
             <span>전체 후보</span>
             <strong>{meeting.candidates.length}</strong>
           </div>
-          <p>선택한 장소는 다음 후보와 계속 비교됩니다.</p>
+          <p>선택한 장소는 다음 후보와 계속 비교돼요.</p>
         </div>
         <div
           className={`candidate-list vote-candidate-overview ${
@@ -2772,7 +2771,7 @@ export function ResultsPage() {
                 ? `${results.incompleteMembers}명이 아직 선택 중이에요`
                 : "모두 투표를 마쳤어요"}
             </h2>
-            <p>결과는 5초마다 자동으로 갱신됩니다.</p>
+            <p>결과는 5초마다 자동으로 갱신돼요.</p>
           </div>
         </section>
       )}
@@ -2879,7 +2878,7 @@ export function ResultsPage() {
       <Modal
         open={forceCloseOpen}
         title="아직 투표를 완료하지 않은 인원이 있어요"
-        description={`현재 ${results.incompleteMembers}명이 미완료 상태입니다. 저장된 선택까지만 집계하고 종료할까요?`}
+        description={`현재 ${results.incompleteMembers}명이 미완료 상태예요. 저장된 선택까지만 집계하고 종료할까요?`}
         onClose={() => setForceCloseOpen(false)}
       >
         <div className="modal-actions modal-actions--stack">
@@ -2900,7 +2899,7 @@ export function NotFoundPage() {
     <div className="center-page">
       <Logo />
       <h1>페이지를 찾을 수 없어요</h1>
-      <p>링크가 만료됐거나 주소가 변경됐을 수 있습니다.</p>
+      <p>링크가 만료됐거나 주소가 변경됐을 수 있어요.</p>
       <Link className="button button--primary" to="/">홈으로 이동</Link>
     </div>
   );

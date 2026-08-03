@@ -599,7 +599,7 @@ export function MapCanvas({
         성수역
       </span>
       <span className="map-canvas__mode">
-        {clientId && mapLoadFailed ? "지도 연결 실패 · 목 지도" : "목 지도"}
+        {clientId && mapLoadFailed ? "지도를 불러오지 못했어요" : "지도 미리보기"}
       </span>
       {places.map((place, index) => {
         const left =

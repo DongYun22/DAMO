@@ -4,6 +4,7 @@ import type { AddressInfo } from "node:net";
 import type { Place } from "@damo/contracts";
 import { app } from "./server.js";
 import { store } from "./app-store.js";
+import { MockStore } from "./store.js";
 
 let baseUrl = "";
 const server = app.listen(0, "127.0.0.1");
@@ -497,5 +498,35 @@ describe("DAMO mock API", () => {
     const home = await request("/api/v1/me/home");
     const homeBody = await home.json();
     assert.equal(homeBody.data.hasVoteAlert, false);
+  });
+
+  it("expires a login session 12 hours after it was created", async () => {
+    await store.reset();
+    const signup = await request("/api/v1/auth/test/signup", {
+      method: "POST",
+      body: JSON.stringify({
+        loginId: "session-ttl-user",
+        nickname: "세션테스트",
+        password: "pw1234"
+      })
+    });
+    assert.equal(signup.status, 201);
+    const { accessToken } = (await signup.json()).data;
+
+    const stillValid = await request("/api/v1/me", {
+      headers: { authorization: `Bearer ${accessToken}` }
+    });
+    assert.equal(stillValid.status, 200);
+
+    assert.ok(store instanceof MockStore);
+    const session = store.tokens.get(accessToken)!;
+    session.createdAt = Date.now() - 13 * 60 * 60 * 1000;
+
+    const expired = await request("/api/v1/me", {
+      headers: { authorization: `Bearer ${accessToken}` }
+    });
+    assert.equal(expired.status, 401);
+    const expiredBody = await expired.json();
+    assert.equal(expiredBody.error.code, "INVALID_TOKEN");
   });
 });

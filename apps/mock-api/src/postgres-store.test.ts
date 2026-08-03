@@ -2858,4 +2858,32 @@ describe("PostgresStore (integration)", { skip: !testDatabaseUrl }, () => {
       (error: unknown) => (error as { code?: string }).code === "MEETING_NOT_RECRUITING"
     );
   });
+
+  it("expires a login session 12 hours after it was created", async () => {
+    const { user, accessToken } = await store.signup("host-session-ttl", "호스트", "pw1234");
+
+    // A session created 11 hours ago is still within the 12-hour window.
+    const raw = new Client({ connectionString: testDatabaseUrl });
+    await raw.connect();
+    try {
+      await raw.query(
+        `update auth_sessions set created_at = now() - interval '11 hours' where access_token = $1`,
+        [accessToken]
+      );
+      assert.equal(await store.userIdForToken(accessToken), user.id);
+
+      // A session created 13 hours ago has aged past the 12-hour TTL.
+      await raw.query(
+        `update auth_sessions set created_at = now() - interval '13 hours' where access_token = $1`,
+        [accessToken]
+      );
+    } finally {
+      await raw.end();
+    }
+
+    await assert.rejects(
+      () => store.userIdForToken(accessToken),
+      (error: unknown) => (error as { code?: string }).code === "INVALID_TOKEN"
+    );
+  });
 });

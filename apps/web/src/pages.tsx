@@ -148,7 +148,7 @@ export function LoginPage() {
     }
   };
 
-  const oauth = (provider: "kakao" | "naver" | "google") => {
+  const oauth = (provider: "kakao") => {
     const redirectUri = `${window.location.origin}/oauth/callback`;
     window.location.href = `${API_URL}/auth/oauth/${provider}?redirectUri=${encodeURIComponent(redirectUri)}`;
   };
@@ -160,13 +160,9 @@ export function LoginPage() {
       <section className="auth-card">
         <Logo />
         <div className="auth-card__intro">
-          <span className="eyebrow">우리 모임의 다음을 정하다</span>
-          <h1>
-            장소 고민은 모으고,
-            <br />
-            선택은 가볍게.
-          </h1>
-          <p>각자의 저장 장소를 후보로 모아 A/B 선택으로 다음 만남을 정해요.</p>
+          <span className="eyebrow">장소 고민은 모으고, 선택은 가볍게.</span>
+          <h1>모임의 다음을 정하다</h1>
+          <p>각자 저장한 장소로 빠르게 정하고, 정기 모임으로 오래 만나요.</p>
         </div>
 
         <div className="segmented" role="tablist" aria-label="테스트 계정">
@@ -244,12 +240,6 @@ export function LoginPage() {
         <div className="oauth-list">
           <button className="oauth-button oauth-button--kakao" type="button" onClick={() => oauth("kakao")}>
             <span>K</span> 카카오로 계속
-          </button>
-          <button className="oauth-button oauth-button--naver" type="button" onClick={() => oauth("naver")}>
-            <span>N</span> 네이버로 계속
-          </button>
-          <button className="oauth-button oauth-button--google" type="button" onClick={() => oauth("google")}>
-            <span>G</span> Google로 계속
           </button>
         </div>
       </section>

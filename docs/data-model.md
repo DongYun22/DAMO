@@ -108,8 +108,8 @@ erDiagram
 | 목적 | `DRINK` | 술 한잔 |
 | 성격 | `FUN` | 즐거운 |
 | 성격 | `QUIET` | 조용한 |
-| 성격 | `BUSINESS` | 비즈니스 |
-| 성격 | `TIPSY` | 알딸딸 |
+| 성격 | `BUSINESS` | 격식있는 |
+| 성격 | `TIPSY` | 취기있는 |
 
 ## 5. 사용자와 인증
 

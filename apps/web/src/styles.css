@@ -2915,21 +2915,6 @@ button.candidate-row {
   background: rgba(25, 20, 0, 0.08);
 }
 
-.oauth-button--naver {
-  border-color: #03c75a;
-  color: white;
-  background: #03c75a;
-}
-
-.oauth-button--naver span {
-  background: rgba(255, 255, 255, 0.18);
-}
-
-.oauth-button--google span {
-  color: #4285f4;
-  background: #f4f7fb;
-}
-
 .center-page {
   flex-direction: column;
   gap: 14px;
@@ -3384,12 +3369,6 @@ body {
   -webkit-backdrop-filter: blur(28px) saturate(132%);
 }
 
-.oauth-button--google {
-  border-color: var(--glass-border);
-  background: rgba(255, 255, 255, 0.5);
-  box-shadow: var(--glass-highlight);
-}
-
 @media (hover: hover) {
   .meeting-card:hover,
   .map-result-card:hover,
@@ -3660,11 +3639,6 @@ body {
 
 .auth-card {
   background: rgba(255, 253, 248, 0.72);
-}
-
-.oauth-button--google {
-  border-color: rgba(21, 49, 71, 0.12);
-  background: rgba(255, 253, 248, 0.68);
 }
 
 button:focus-visible,

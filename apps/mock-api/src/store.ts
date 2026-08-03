@@ -177,8 +177,7 @@ const seedPlaces: Place[] = [
     latitude: 37.5452,
     longitude: 127.0417,
     station: "서울숲역",
-    distanceText: "도보 4분",
-    imageUrl: "/place-terrace.svg"
+    distanceText: "도보 4분"
   },
   {
     id: "place-2",
@@ -190,8 +189,7 @@ const seedPlaces: Place[] = [
     latitude: 37.5437,
     longitude: 127.0551,
     station: "성수역",
-    distanceText: "도보 5분",
-    imageUrl: "/place-dining.svg"
+    distanceText: "도보 5분"
   },
   {
     id: "place-3",
@@ -203,8 +201,7 @@ const seedPlaces: Place[] = [
     latitude: 37.5471,
     longitude: 127.0432,
     station: "서울숲역",
-    distanceText: "도보 6분",
-    imageUrl: "/place-pizza.svg"
+    distanceText: "도보 6분"
   },
   {
     id: "place-4",
@@ -216,8 +213,7 @@ const seedPlaces: Place[] = [
     latitude: 37.5444,
     longitude: 127.0577,
     station: "성수역",
-    distanceText: "도보 2분",
-    imageUrl: "/place-study.svg"
+    distanceText: "도보 2분"
   },
   {
     id: "place-5",
@@ -229,8 +225,7 @@ const seedPlaces: Place[] = [
     latitude: 37.5411,
     longitude: 127.0666,
     station: "건대입구역",
-    distanceText: "도보 7분",
-    imageUrl: "/place-lounge.svg"
+    distanceText: "도보 7분"
   },
   {
     id: "place-6",
@@ -242,8 +237,7 @@ const seedPlaces: Place[] = [
     latitude: 37.552,
     longitude: 127.0692,
     station: "뚝섬유원지역",
-    distanceText: "도보 8분",
-    imageUrl: "/place-cafe.svg"
+    distanceText: "도보 8분"
   }
 ];
 

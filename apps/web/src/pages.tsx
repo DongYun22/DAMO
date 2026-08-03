@@ -857,7 +857,7 @@ export function MyPlacesPage() {
                   className="saved-place-item__main"
                   onClick={() => setActionsFor(actionsFor === item.id ? "" : item.id)}
                 >
-                  <PlaceThumbnail place={item.place} purpose={item.purpose} />
+                  <PlaceThumbnail place={item.place} />
                   <div className="place-meta">
                     <strong>{item.place.name}</strong>
                     <span>

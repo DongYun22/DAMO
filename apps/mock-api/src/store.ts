@@ -15,6 +15,7 @@ import type {
   Purpose,
   RecurrenceType,
   RepeatMeetingInput,
+  UpdateMeetingInput,
   User,
   UserPlace,
   VoteResults,
@@ -830,6 +831,28 @@ export class MockStore {
     this.meetings.push(meeting);
     const user = this.getUser(userId);
     this.members.push(this.member(randomUUID(), meeting.id, userId, user.nickname, "HOST"));
+    return this.detail(meeting.id, userId);
+  }
+
+  updateMeeting(meetingId: string, userId: string, input: UpdateMeetingInput): MeetingDetail {
+    const meeting = this.requireHost(meetingId, userId);
+    if (meeting.status !== "RECRUITING") {
+      throw new StoreError(409, "MEETING_NOT_RECRUITING", "이미 투표가 시작된 모임입니다.");
+    }
+    if (input.capacity < this.activeMembers(meetingId).length) {
+      throw new StoreError(
+        422,
+        "CAPACITY_TOO_SMALL",
+        "선택한 모임원 수보다 정원을 작게 설정할 수 없습니다."
+      );
+    }
+
+    meeting.name = input.name;
+    meeting.capacity = input.capacity;
+    meeting.meetingAt = input.meetingAt;
+    meeting.purpose = input.purpose;
+    meeting.mood = input.mood;
+    meeting.updatedAt = now();
     return this.detail(meeting.id, userId);
   }
 

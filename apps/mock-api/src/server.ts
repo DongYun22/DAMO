@@ -323,6 +323,26 @@ app.get(
   )
 );
 
+app.patch(
+  "/api/v1/meetings/:meetingId",
+  auth,
+  asyncRoute(async (req, res) => {
+    const body = z
+      .object({
+        name: z.string().min(1).max(20),
+        capacity: z.number().int().min(2),
+        meetingAt: z.string().datetime({ offset: true }),
+        purpose: purposeSchema,
+        mood: moodSchema
+      })
+      .parse(req.body);
+    return ok(
+      res,
+      await store.updateMeeting(pathParam(req, "meetingId"), req.userId!, body)
+    );
+  })
+);
+
 app.post(
   "/api/v1/meetings/:meetingId/join",
   auth,

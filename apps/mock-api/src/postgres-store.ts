@@ -14,6 +14,7 @@ import type {
   Purpose,
   RecurrenceType,
   RepeatMeetingInput,
+  UpdateMeetingInput,
   User,
   UserPlace,
   VoteResults,
@@ -2121,6 +2122,56 @@ export class PostgresStore {
     } finally {
       client.release();
     }
+    return this.detail(meetingId, userId);
+  }
+
+  async updateMeeting(meetingId: string, userId: string, input: UpdateMeetingInput) {
+    await this.withMeetingLock(meetingId, async (client) => {
+      const meetingResult = await client.query<{
+        status: MeetingStatus;
+        hostUserId: string;
+      }>(
+        `
+          select status, host_user_id as "hostUserId"
+          from meetings
+          where id = $1 and status <> 'DELETED'
+          for update
+        `,
+        [meetingId]
+      );
+      const meeting = meetingResult.rows[0];
+      if (!meeting) {
+        throw new StoreError(404, "MEETING_NOT_FOUND", "모임을 찾을 수 없습니다.");
+      }
+      if (meeting.hostUserId !== userId) {
+        throw new StoreError(403, "HOST_ONLY", "모임장만 실행할 수 있습니다.");
+      }
+      if (meeting.status !== "RECRUITING") {
+        throw new StoreError(409, "MEETING_NOT_RECRUITING", "이미 투표가 시작된 모임입니다.");
+      }
+
+      const memberCountResult = await client.query<{ count: string }>(
+        `
+          select count(*)::text as count
+          from meeting_members
+          where meeting_id = $1 and status = 'ACTIVE'
+        `,
+        [meetingId]
+      );
+      const activeMemberCount = Number(memberCountResult.rows[0]?.count ?? 0);
+      if (input.capacity < activeMemberCount) {
+        throw new StoreError(422, "CAPACITY_TOO_SMALL", "선택한 모임원 수보다 정원을 작게 설정할 수 없습니다.");
+      }
+
+      await client.query(
+        `
+          update meetings
+          set name = $2, capacity = $3, meeting_at = $4, purpose = $5, mood = $6, updated_at = now()
+          where id = $1
+        `,
+        [meetingId, input.name, input.capacity, input.meetingAt, input.purpose, input.mood]
+      );
+    });
     return this.detail(meetingId, userId);
   }
 

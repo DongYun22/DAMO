@@ -381,7 +381,7 @@ Render 환경변수에 `VITE_NAVER_MAP_CLIENT_ID`가 있어야 하며, 값을 �
 - 장소 이미지와 상세 정보 제공 범위 개선
 - 5초 폴링을 WebSocket 또는 Server-Sent Events로 전환
 - 모바일 접근성, 키보드 탐색, 다양한 기기 회귀 테스트 확대
-- PostgreSQL 저장소의 나머지 변경 작업을 개별 SQL로 전환
+- PostgreSQL 저장소의 쓰기 작업을 개별 SQL로 전환 완료 (`reset()`은 DB 전체 초기화가 목적이라 대상에서 제외)
 
 ## 문서 읽는 순서
 

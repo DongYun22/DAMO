@@ -11,7 +11,7 @@
     "db:setup": "pnpm db:migrate && pnpm db:seed",
     "build": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test src/server.test.ts src/naver-search.test.ts"
+    "test": "tsx --test src/server.test.ts src/naver-search.test.ts src/postgres-store.test.ts"
   },
   "dependencies": {
     "@damo/contracts": "workspace:*",

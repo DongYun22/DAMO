@@ -20,6 +20,7 @@ import {
   LoginPage,
   MapPage,
   MeetingDetailPage,
+  MeetingEditPage,
   MeetingRecurrencePage,
   MyPlacesPage,
   NotFoundPage,
@@ -88,6 +89,10 @@ export function App() {
           <Route path="/meetings/new" element={<CreateMeetingPage />} />
           <Route path="/meetings/join" element={<JoinMeetingPage />} />
           <Route path="/meetings/:meetingId" element={<MeetingDetailPage />} />
+          <Route
+            path="/meetings/:meetingId/edit"
+            element={<MeetingEditPage />}
+          />
           <Route
             path="/meetings/:meetingId/repeat"
             element={<RepeatMeetingPage />}

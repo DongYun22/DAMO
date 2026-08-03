@@ -10,6 +10,7 @@ import {
   LogOut,
   MapPin,
   Minus,
+  Pencil,
   Plus,
   Repeat2,
   RotateCcw,
@@ -40,6 +41,7 @@ import type {
   Purpose,
   RecurrenceType,
   RepeatMeetingInput,
+  UpdateMeetingInput,
   UserPlace,
   VoteResults,
   VoteSessionView
@@ -146,7 +148,7 @@ export function LoginPage() {
     }
   };
 
-  const oauth = (provider: "kakao" | "naver" | "google") => {
+  const oauth = (provider: "kakao") => {
     const redirectUri = `${window.location.origin}/oauth/callback`;
     window.location.href = `${API_URL}/auth/oauth/${provider}?redirectUri=${encodeURIComponent(redirectUri)}`;
   };
@@ -158,13 +160,9 @@ export function LoginPage() {
       <section className="auth-card">
         <Logo />
         <div className="auth-card__intro">
-          <span className="eyebrow">우리 모임의 다음을 정하다</span>
-          <h1>
-            장소 고민은 모으고,
-            <br />
-            선택은 가볍게.
-          </h1>
-          <p>각자의 저장 장소를 후보로 모아 A/B 선택으로 다음 만남을 정해요.</p>
+          <span className="eyebrow">장소 고민은 모으고, 선택은 가볍게.</span>
+          <h1>모임의 다음을 정하다</h1>
+          <p>각자 저장한 장소로 빠르게 정하고, 정기 모임으로 오래 만나요.</p>
         </div>
 
         <div className="segmented" role="tablist" aria-label="테스트 계정">
@@ -238,16 +236,10 @@ export function LoginPage() {
           </PrimaryButton>
         </form>
 
-        <div className="auth-divider"><span>또는 OAuth 목 로그인</span></div>
+        <div className="auth-divider"><span>또는 소셜 로그인</span></div>
         <div className="oauth-list">
           <button className="oauth-button oauth-button--kakao" type="button" onClick={() => oauth("kakao")}>
             <span>K</span> 카카오로 계속
-          </button>
-          <button className="oauth-button oauth-button--naver" type="button" onClick={() => oauth("naver")}>
-            <span>N</span> 네이버로 계속
-          </button>
-          <button className="oauth-button oauth-button--google" type="button" onClick={() => oauth("google")}>
-            <span>G</span> Google로 계속
           </button>
         </div>
       </section>
@@ -264,7 +256,7 @@ export function OAuthCallbackPage() {
   useEffect(() => {
     const token = params.get("accessToken");
     if (!token) {
-      setError("OAuth 목 토큰을 받지 못했습니다.");
+      setError("OAuth 토큰을 받지 못했습니다.");
       return;
     }
     void acceptOAuthToken(token)
@@ -368,7 +360,6 @@ export function HomePage() {
           <div className="profile-sheet__avatar">{user.nickname.slice(0, 1)}</div>
           <strong>{user.nickname}</strong>
           <span>{user.email ?? "이메일 없음"}</span>
-          <small>{user.loginProvider} 계정</small>
         </div>
         <SecondaryButton
           type="button"
@@ -388,7 +379,10 @@ export function MapPage() {
   const [searchParams] = useSearchParams();
   const meetingId = searchParams.get("meetingId") ?? "";
   const candidatePath = meetingId ? `/meetings/${meetingId}/candidates` : "";
-  const [query, setQuery] = useState("");
+  // Default search on load — a single bounded query (capped at 5 Naver
+  // Search API results) instead of an empty query, which falls back to
+  // returning every place ever saved in the local `places` table.
+  const [query, setQuery] = useState("연세대학교 이윤재관");
   const [places, setPlaces] = useState<Place[]>([]);
   const [saved, setSaved] = useState<UserPlace[]>([]);
   const [selected, setSelected] = useState<Place | null>(null);
@@ -976,7 +970,7 @@ export function MyPlacesPage() {
       <Modal
         open={Boolean(removing)}
         title="장소 등록을 해제할까요?"
-        description="투표가 생성된 모임의 고정 후보에는 영향을 주지 않습니다."
+        description="투표가 생성된 모임의 고정 후보에는 영향을 주지 않아요."
         onClose={() => setRemoving(null)}
       >
         <div className="modal-actions modal-actions--stack">
@@ -1136,6 +1130,170 @@ export function CreateMeetingPage() {
         <InlineError message={error} />
         <PrimaryButton type="submit" disabled={submitting}>
           {submitting ? "모임 만드는 중…" : "모임 생성하기"}
+        </PrimaryButton>
+      </form>
+    </div>
+  );
+}
+
+// 모임 생성 폼과 동일한 필드 구성으로, 기존 모임의 값을 기본값으로 채워서 보여준다.
+// RECRUITING 상태에서만 수정할 수 있다 — join/leave/kick/후보변경과 같은 규칙.
+export function MeetingEditPage() {
+  const { meetingId = "" } = useParams();
+  const navigate = useNavigate();
+  const { refreshHome } = useShell();
+  const [name, setName] = useState("");
+  const [capacity, setCapacity] = useState(2);
+  const [date, setDate] = useState("");
+  const [meridiem, setMeridiem] = useState<"AM" | "PM">("PM");
+  const [hour, setHour] = useState(7);
+  const [minute, setMinute] = useState<"00" | "30">("30");
+  const [purpose, setPurpose] = useState<Purpose>("MEAL");
+  const [mood, setMood] = useState<Mood>("FUN");
+  const [loading, setLoading] = useState(true);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    const load = async () => {
+      try {
+        const detail = await api<MeetingDetail>(`/meetings/${meetingId}`);
+        setName(detail.name);
+        setCapacity(detail.capacity);
+        setPurpose(detail.purpose);
+        setMood(detail.mood);
+
+        const koreaTime = new Date(
+          new Date(detail.meetingAt).getTime() + 9 * 60 * 60 * 1000
+        );
+        setDate(toDateInput(koreaTime));
+        const sourceHour = koreaTime.getUTCHours();
+        setMeridiem(sourceHour < 12 ? "AM" : "PM");
+        setHour(sourceHour % 12 || 12);
+        setMinute(koreaTime.getUTCMinutes() < 30 ? "00" : "30");
+      } catch (reason) {
+        setError(errorMessage(reason));
+      } finally {
+        setLoading(false);
+      }
+    };
+    void load();
+  }, [meetingId]);
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    setError("");
+    if (!name.trim()) {
+      setError("모임 이름을 입력해 주세요.");
+      return;
+    }
+    setSubmitting(true);
+    try {
+      const hour24 =
+        meridiem === "AM" ? (hour === 12 ? 0 : hour) : hour === 12 ? 12 : hour + 12;
+      const meetingAt = `${date}T${String(hour24).padStart(2, "0")}:${minute}:00+09:00`;
+      const input: UpdateMeetingInput = {
+        name: name.trim(),
+        capacity: Math.max(2, capacity),
+        meetingAt,
+        purpose,
+        mood
+      };
+      await api<MeetingDetail>(`/meetings/${meetingId}`, {
+        method: "PATCH",
+        body: JSON.stringify(input)
+      });
+      await refreshHome();
+      navigate(`/meetings/${meetingId}`);
+    } catch (reason) {
+      setError(errorMessage(reason));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  if (loading) return <Loading label="모임 정보 불러오는 중" />;
+
+  return (
+    <div className="page">
+      <ScreenHeader title="모임 편집" description="모임 만들기와 같은 항목을 수정할 수 있어요." />
+      <form className="form-card meeting-form" onSubmit={submit}>
+        <label className="field">
+          <span>모임 이름 <small>{name.length}/20</small></span>
+          <input
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+            maxLength={20}
+            required
+          />
+        </label>
+
+        <fieldset className="capacity-field">
+          <legend>정원</legend>
+          <div>
+            <button
+              type="button"
+              onClick={() => setCapacity((value) => Math.max(2, value - 1))}
+              aria-label="정원 1명 줄이기"
+            >
+              <Minus size={21} />
+            </button>
+            <label>
+              <input
+                type="number"
+                min={2}
+                value={capacity}
+                onChange={(event) => setCapacity(Math.max(2, Number(event.target.value)))}
+              />
+              <span>명</span>
+            </label>
+            <button
+              type="button"
+              onClick={() => setCapacity((value) => value + 1)}
+              aria-label="정원 1명 늘리기"
+            >
+              <Plus size={21} />
+            </button>
+          </div>
+        </fieldset>
+
+        <label className="field">
+          <span>만나는 날짜</span>
+          <span className="input-with-icon">
+            <CalendarDays size={19} />
+            <input type="date" value={date} onChange={(event) => setDate(event.target.value)} required />
+          </span>
+        </label>
+
+        <fieldset className="time-field">
+          <legend>만나는 시각</legend>
+          <div className="time-grid">
+            <select value={meridiem} onChange={(event) => setMeridiem(event.target.value as "AM" | "PM")}>
+              <option value="AM">오전</option>
+              <option value="PM">오후</option>
+            </select>
+            <select value={hour} onChange={(event) => setHour(Number(event.target.value))}>
+              {Array.from({ length: 12 }, (_, index) => index + 1).map((value) => (
+                <option key={value} value={value}>{value}시</option>
+              ))}
+            </select>
+            <select value={minute} onChange={(event) => setMinute(event.target.value as "00" | "30")}>
+              <option value="00">00분</option>
+              <option value="30">30분</option>
+            </select>
+          </div>
+          <small>오전 12시는 자정, 오후 12시는 정오예요.</small>
+        </fieldset>
+
+        <PurposeMoodFields
+          purpose={purpose}
+          mood={mood}
+          onPurpose={setPurpose}
+          onMood={setMood}
+        />
+        <InlineError message={error} />
+        <PrimaryButton type="submit" disabled={submitting}>
+          {submitting ? "저장하는 중…" : "저장하기"}
         </PrimaryButton>
       </form>
     </div>
@@ -2141,7 +2299,12 @@ export function MeetingDetailPage() {
           count={meeting.candidates.length}
           action={
             meeting.status === "RECRUITING" ? (
-              <Link to={`/meetings/${meetingId}/candidates`}>내 장소에서 가져오기</Link>
+              <Link
+                className="section-title__link"
+                to={`/meetings/${meetingId}/candidates`}
+              >
+                내 장소에서 가져오기
+              </Link>
             ) : undefined
           }
         />
@@ -2199,7 +2362,7 @@ export function MeetingDetailPage() {
             onClick={() => setStartOpen(true)}
           >
             <Vote size={18} />
-            {meeting.candidates.length < 2 ? "후보 2곳 이상 필요" : "투표 시작"}
+            {meeting.candidates.length < 2 ? "2곳 이상의 후보가 필요해요" : "투표 시작"}
           </PrimaryButton>
         ) : null}
         {meeting.status === "RECRUITING" && !isHost ? (
@@ -2229,7 +2392,7 @@ export function MeetingDetailPage() {
       <Modal
         open={startOpen}
         title="투표를 시작할까요?"
-        description={`후보 ${meeting.candidates.length}곳이 고정되고 모든 모임원에게 투표 알림이 표시됩니다.`}
+        description={`후보 ${meeting.candidates.length}곳이 고정되고 모든 모임원에게 투표 알림이 표시돼요.`}
         onClose={() => setStartOpen(false)}
       >
         <div className="modal-actions">
@@ -2244,37 +2407,48 @@ export function MeetingDetailPage() {
         description="삭제는 되돌릴 수 없으므로 메뉴 안에 작게 배치했어요."
         onClose={() => setMenuOpen(false)}
       >
-        {canRepeatMeeting ? (
+        <div className="modal-actions modal-actions--stack">
           <SecondaryButton
             type="button"
-            onClick={() => navigate(`/meetings/${meetingId}/repeat`)}
+            onClick={() => {
+              setMenuOpen(false);
+              navigate(`/meetings/${meetingId}/edit`);
+            }}
           >
-            <Plus size={18} /> 다시 만나기
+            <Pencil size={18} /> 모임 편집
           </SecondaryButton>
-        ) : (
+          {canRepeatMeeting ? (
+            <SecondaryButton
+              type="button"
+              onClick={() => navigate(`/meetings/${meetingId}/repeat`)}
+            >
+              <Plus size={18} /> 다시 만나기
+            </SecondaryButton>
+          ) : (
+            <SecondaryButton
+              type="button"
+              onClick={() => navigate(`/meetings/${meetingId}/recurrence`)}
+            >
+              <Repeat2 size={18} /> 정기적으로 만나기
+            </SecondaryButton>
+          )}
           <SecondaryButton
             type="button"
-            onClick={() => navigate(`/meetings/${meetingId}/recurrence`)}
+            className="button--danger-text"
+            onClick={() => {
+              setMenuOpen(false);
+              setDeleteOpen(true);
+            }}
           >
-            <Repeat2 size={18} /> 정기적으로 만나기
+            <Trash2 size={18} /> 모임 삭제
           </SecondaryButton>
-        )}
-        <SecondaryButton
-          type="button"
-          className="button--danger-text"
-          onClick={() => {
-            setMenuOpen(false);
-            setDeleteOpen(true);
-          }}
-        >
-          <Trash2 size={18} /> 모임 삭제
-        </SecondaryButton>
+        </div>
       </Modal>
 
       <Modal
         open={deleteOpen}
         title="모임을 정말 삭제할까요?"
-        description="공유 링크와 가입 코드는 즉시 사용할 수 없게 됩니다. 참여자와 투표 기록도 화면에서 사라집니다."
+        description="공유 링크와 가입 코드는 즉시 사용할 수 없게 돼요. 참여자와 투표 기록도 화면에서 사라져요."
         onClose={() => setDeleteOpen(false)}
       >
         <div className="danger-box">
@@ -2292,7 +2466,7 @@ export function MeetingDetailPage() {
       <Modal
         open={Boolean(kickMemberId)}
         title="모임원을 내보낼까요?"
-        description="이 모임원이 추천한 장소도 후보에서 빠집니다. 다른 추천자가 남아 있으면 후보는 유지됩니다."
+        description="이 모임원이 추천한 장소도 후보에서 빠져요. 다른 추천자가 남아 있으면 후보는 유지돼요."
         onClose={() => setKickMemberId("")}
       >
         <div className="modal-actions">
@@ -2393,7 +2567,7 @@ export function VotePage() {
             <span>전체 후보</span>
             <strong>{meeting.candidates.length}</strong>
           </div>
-          <p>선택한 장소는 다음 후보와 계속 비교됩니다.</p>
+          <p>선택한 장소는 다음 후보와 계속 비교돼요.</p>
         </div>
         <div
           className={`candidate-list vote-candidate-overview ${
@@ -2603,7 +2777,7 @@ export function ResultsPage() {
                 ? `${results.incompleteMembers}명이 아직 선택 중이에요`
                 : "모두 투표를 마쳤어요"}
             </h2>
-            <p>결과는 5초마다 자동으로 갱신됩니다.</p>
+            <p>결과는 5초마다 자동으로 갱신돼요.</p>
           </div>
         </section>
       )}
@@ -2710,7 +2884,7 @@ export function ResultsPage() {
       <Modal
         open={forceCloseOpen}
         title="아직 투표를 완료하지 않은 인원이 있어요"
-        description={`현재 ${results.incompleteMembers}명이 미완료 상태입니다. 저장된 선택까지만 집계하고 종료할까요?`}
+        description={`현재 ${results.incompleteMembers}명이 미완료 상태예요. 저장된 선택까지만 집계하고 종료할까요?`}
         onClose={() => setForceCloseOpen(false)}
       >
         <div className="modal-actions modal-actions--stack">
@@ -2731,7 +2905,7 @@ export function NotFoundPage() {
     <div className="center-page">
       <Logo />
       <h1>페이지를 찾을 수 없어요</h1>
-      <p>링크가 만료됐거나 주소가 변경됐을 수 있습니다.</p>
+      <p>링크가 만료됐거나 주소가 변경됐을 수 있어요.</p>
       <Link className="button button--primary" to="/">홈으로 이동</Link>
     </div>
   );

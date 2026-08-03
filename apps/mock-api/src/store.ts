@@ -15,6 +15,7 @@ import type {
   Purpose,
   RecurrenceType,
   RepeatMeetingInput,
+  UpdateMeetingInput,
   User,
   UserPlace,
   VoteResults,
@@ -111,6 +112,12 @@ export interface StoreSnapshot {
   sessions: VoteSessionRecord[];
 }
 
+// Login sessions expire this many hours after creation, in both stores —
+// after that, /me (and everything behind the `auth` middleware) rejects the
+// token with INVALID_TOKEN, same as an unrecognized token, so the client's
+// existing "clear token and show the login screen" handling covers it too.
+export const SESSION_TTL_HOURS = 12;
+
 export class StoreError extends Error {
   constructor(
     public readonly status: number,
@@ -142,7 +149,7 @@ const nextMonthlyMeetingAt = (meetingAt: string) => {
   return new Date(nextLocal - koreaOffsetMs).toISOString();
 };
 
-const nextRecurringMeetingAt = (
+export const nextRecurringMeetingAt = (
   meetingAt: string,
   recurrenceType: Exclude<RecurrenceType, "CUSTOM">
 ) => {
@@ -170,8 +177,7 @@ const seedPlaces: Place[] = [
     latitude: 37.5452,
     longitude: 127.0417,
     station: "서울숲역",
-    distanceText: "도보 4분",
-    imageUrl: "/place-terrace.svg"
+    distanceText: "도보 4분"
   },
   {
     id: "place-2",
@@ -183,8 +189,7 @@ const seedPlaces: Place[] = [
     latitude: 37.5437,
     longitude: 127.0551,
     station: "성수역",
-    distanceText: "도보 5분",
-    imageUrl: "/place-dining.svg"
+    distanceText: "도보 5분"
   },
   {
     id: "place-3",
@@ -196,8 +201,7 @@ const seedPlaces: Place[] = [
     latitude: 37.5471,
     longitude: 127.0432,
     station: "서울숲역",
-    distanceText: "도보 6분",
-    imageUrl: "/place-pizza.svg"
+    distanceText: "도보 6분"
   },
   {
     id: "place-4",
@@ -209,8 +213,7 @@ const seedPlaces: Place[] = [
     latitude: 37.5444,
     longitude: 127.0577,
     station: "성수역",
-    distanceText: "도보 2분",
-    imageUrl: "/place-study.svg"
+    distanceText: "도보 2분"
   },
   {
     id: "place-5",
@@ -222,8 +225,7 @@ const seedPlaces: Place[] = [
     latitude: 37.5411,
     longitude: 127.0666,
     station: "건대입구역",
-    distanceText: "도보 7분",
-    imageUrl: "/place-lounge.svg"
+    distanceText: "도보 7분"
   },
   {
     id: "place-6",
@@ -235,8 +237,7 @@ const seedPlaces: Place[] = [
     latitude: 37.552,
     longitude: 127.0692,
     station: "뚝섬유원지역",
-    distanceText: "도보 8분",
-    imageUrl: "/place-cafe.svg"
+    distanceText: "도보 8분"
   }
 ];
 
@@ -270,7 +271,7 @@ const seedUsers: UserRecord[] = [
 export class MockStore {
   places: Place[] = [];
   users: UserRecord[] = [];
-  tokens = new Map<string, string>();
+  tokens = new Map<string, { userId: string; createdAt: number }>();
   userPlaces: UserPlace[] = [];
   meetings: MeetingRecord[] = [];
   members: MemberRecord[] = [];
@@ -286,9 +287,9 @@ export class MockStore {
     this.places = structuredClone(seedPlaces);
     this.users = structuredClone(seedUsers);
     this.tokens = new Map([
-      ["mock-token-user-1", "user-1"],
-      ["mock-token-user-2", "user-2"],
-      ["mock-token-user-3", "user-3"]
+      ["mock-token-user-1", { userId: "user-1", createdAt: Date.now() }],
+      ["mock-token-user-2", { userId: "user-2", createdAt: Date.now() }],
+      ["mock-token-user-3", { userId: "user-3", createdAt: Date.now() }]
     ]);
     this.userPlaces = [
       this.makeUserPlace("up-1", "user-1", "place-1", "CAFE", "FUN"),
@@ -460,7 +461,9 @@ export class MockStore {
     return structuredClone({
       places: this.places,
       users: this.users,
-      tokens: [...this.tokens.entries()],
+      tokens: [...this.tokens.entries()].map(
+        ([token, session]) => [token, session.userId] as [string, string]
+      ),
       userPlaces: this.userPlaces,
       meetings: this.meetings,
       members: this.members,
@@ -474,7 +477,12 @@ export class MockStore {
     const value = structuredClone(snapshot);
     this.places = value.places;
     this.users = value.users;
-    this.tokens = new Map(value.tokens);
+    // Snapshots don't carry each session's original creation time (see
+    // snapshot() above) — treat hydrated sessions as freshly created rather
+    // than losing them entirely or reviving something already past its TTL.
+    this.tokens = new Map(
+      value.tokens.map(([token, userId]) => [token, { userId, createdAt: Date.now() }])
+    );
     this.userPlaces = value.userPlaces;
     this.meetings = value.meetings;
     this.members = value.members;
@@ -594,9 +602,11 @@ export class MockStore {
   }
 
   userIdForToken(token: string | undefined): string {
-    const userId = token ? this.tokens.get(token) : undefined;
-    if (!userId) throw new StoreError(401, "INVALID_TOKEN", "로그인 정보가 만료되었습니다.");
-    return userId;
+    const session = token ? this.tokens.get(token) : undefined;
+    if (!session || Date.now() - session.createdAt > SESSION_TTL_HOURS * 60 * 60 * 1000) {
+      throw new StoreError(401, "INVALID_TOKEN", "로그인 정보가 만료되었습니다.");
+    }
+    return session.userId;
   }
 
   signup(loginId: string, nickname: string, password: string, email?: string | null) {
@@ -614,7 +624,7 @@ export class MockStore {
     };
     this.users.push(user);
     const accessToken = `mock-token-${id}`;
-    this.tokens.set(accessToken, id);
+    this.tokens.set(accessToken, { userId: id, createdAt: Date.now() });
     return { user: this.getUser(id), accessToken, refreshToken: `mock-refresh-${id}` };
   }
 
@@ -624,7 +634,7 @@ export class MockStore {
     );
     if (!user) throw new StoreError(401, "INVALID_CREDENTIALS", "아이디 또는 비밀번호가 올바르지 않습니다.");
     const accessToken = `mock-token-${user.id}`;
-    this.tokens.set(accessToken, user.id);
+    this.tokens.set(accessToken, { userId: user.id, createdAt: Date.now() });
     return { user: this.getUser(user.id), accessToken, refreshToken: `mock-refresh-${user.id}` };
   }
 
@@ -833,6 +843,28 @@ export class MockStore {
     return this.detail(meeting.id, userId);
   }
 
+  updateMeeting(meetingId: string, userId: string, input: UpdateMeetingInput): MeetingDetail {
+    const meeting = this.requireHost(meetingId, userId);
+    if (meeting.status !== "RECRUITING") {
+      throw new StoreError(409, "MEETING_NOT_RECRUITING", "이미 투표가 시작된 모임입니다.");
+    }
+    if (input.capacity < this.activeMembers(meetingId).length) {
+      throw new StoreError(
+        422,
+        "CAPACITY_TOO_SMALL",
+        "선택한 모임원 수보다 정원을 작게 설정할 수 없습니다."
+      );
+    }
+
+    meeting.name = input.name;
+    meeting.capacity = input.capacity;
+    meeting.meetingAt = input.meetingAt;
+    meeting.purpose = input.purpose;
+    meeting.mood = input.mood;
+    meeting.updatedAt = now();
+    return this.detail(meeting.id, userId);
+  }
+
   repeatMeeting(
     sourceMeetingId: string,
     userId: string,
@@ -972,10 +1004,25 @@ export class MockStore {
     const meeting = this.requireMeeting(meetingId);
     if (meeting.joinCode !== joinCode) throw new StoreError(422, "INVALID_JOIN_CODE", "가입 코드가 올바르지 않습니다.");
     if (meeting.status !== "RECRUITING") throw new StoreError(409, "MEETING_NOT_RECRUITING", "이미 투표가 시작된 모임입니다.");
-    const members = this.activeMembers(meetingId);
     const existing = this.members.find((member) => member.meetingId === meetingId && member.userId === userId);
-    if (!existing && members.length >= meeting.capacity) {
-      throw new StoreError(409, "MEETING_CAPACITY_EXCEEDED", "모임 정원이 모두 찼습니다.");
+    // A KICKED member was removed by the host and must never be able to
+    // walk back in with the join code, regardless of capacity.
+    if (existing && existing.status === "KICKED") {
+      throw new StoreError(
+        403,
+        "PREVIOUSLY_KICKED",
+        "모임장에 의해 내보내진 모임에는 다시 가입할 수 없습니다."
+      );
+    }
+    // A brand-new member and a LEFT member rejoining both add a new
+    // ACTIVE seat, so both must be checked against capacity. An already-ACTIVE
+    // member calling joinMeeting again (e.g. a duplicate request) doesn't
+    // change the ACTIVE count, so it's exempt from the check.
+    if (!existing || existing.status !== "ACTIVE") {
+      const members = this.activeMembers(meetingId);
+      if (members.length >= meeting.capacity) {
+        throw new StoreError(409, "MEETING_CAPACITY_EXCEEDED", "모임 정원이 모두 찼습니다.");
+      }
     }
     if (existing) {
       existing.status = "ACTIVE";

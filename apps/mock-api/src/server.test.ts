@@ -4,6 +4,7 @@ import type { AddressInfo } from "node:net";
 import type { Place } from "@damo/contracts";
 import { app } from "./server.js";
 import { store } from "./app-store.js";
+import { MockStore } from "./store.js";
 
 let baseUrl = "";
 const server = app.listen(0, "127.0.0.1");
@@ -80,6 +81,117 @@ describe("DAMO mock API", () => {
     });
     const anotherBody = await another.json();
     assert.notEqual(anotherBody.data.joinCode, body.data.joinCode);
+  });
+
+  it("updates a meeting while RECRUITING, enforcing host-only and capacity, and rejects once voting starts", async () => {
+    await store.reset();
+
+    // meeting-1: RECRUITING, host user-1, 3 active members (seed data).
+    const nonHost = await request("/api/v1/meetings/meeting-1", {
+      method: "PATCH",
+      headers: { authorization: "Bearer mock-token-user-2" },
+      body: JSON.stringify({
+        name: "수정 시도",
+        capacity: 4,
+        meetingAt: "2026-08-21T10:00:00+09:00",
+        purpose: "CAFE",
+        mood: "QUIET"
+      })
+    });
+    assert.equal(nonHost.status, 403);
+
+    const tooSmall = await request("/api/v1/meetings/meeting-1", {
+      method: "PATCH",
+      body: JSON.stringify({
+        name: "수정 시도",
+        capacity: 2,
+        meetingAt: "2026-08-21T10:00:00+09:00",
+        purpose: "CAFE",
+        mood: "QUIET"
+      })
+    });
+    assert.equal(tooSmall.status, 422);
+
+    const updated = await request("/api/v1/meetings/meeting-1", {
+      method: "PATCH",
+      body: JSON.stringify({
+        name: "수정된 모임명",
+        capacity: 5,
+        meetingAt: "2026-08-21T11:30:00+09:00",
+        purpose: "DRINK",
+        mood: "TIPSY"
+      })
+    });
+    assert.equal(updated.status, 200);
+    const updatedBody = await updated.json();
+    assert.equal(updatedBody.data.name, "수정된 모임명");
+    assert.equal(updatedBody.data.capacity, 5);
+    assert.equal(updatedBody.data.purpose, "DRINK");
+    assert.equal(updatedBody.data.mood, "TIPSY");
+
+    // meeting-2: VOTING, host user-2 (seed data) — editing must be blocked
+    // once a vote has started, same as join/leave/kick/candidate changes.
+    const afterVoteStart = await request("/api/v1/meetings/meeting-2", {
+      method: "PATCH",
+      headers: { authorization: "Bearer mock-token-user-2" },
+      body: JSON.stringify({
+        name: "투표 중 수정 시도",
+        capacity: 4,
+        meetingAt: "2026-08-21T10:00:00+09:00",
+        purpose: "CAFE",
+        mood: "QUIET"
+      })
+    });
+    assert.equal(afterVoteStart.status, 409);
+  });
+
+  it("blocks a KICKED member from rejoining a meeting via join code", async () => {
+    await store.reset();
+    const created = await request("/api/v1/meetings", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "강퇴 재입장 테스트",
+        capacity: 4,
+        meetingAt: "2026-08-20T10:00:00+09:00",
+        purpose: "CAFE",
+        mood: "QUIET"
+      })
+    });
+    assert.equal(created.status, 201);
+    const createdBody = await created.json();
+    const meetingId = createdBody.data.id;
+    const joinCode = createdBody.data.joinCode;
+
+    const joined = await request(`/api/v1/meetings/${meetingId}/join`, {
+      method: "POST",
+      headers: { authorization: "Bearer mock-token-user-2" },
+      body: JSON.stringify({ joinCode, meetingNickname: "게스트닉" })
+    });
+    assert.equal(joined.status, 200);
+
+    const detail = await request(`/api/v1/meetings/${meetingId}`);
+    const detailBody = await detail.json();
+    const guestMember = detailBody.data.members.find(
+      (member: { userId: string }) => member.userId === "user-2"
+    );
+    assert.ok(guestMember);
+
+    const kicked = await request(
+      `/api/v1/meetings/${meetingId}/members/${guestMember.id}/kick`,
+      { method: "POST" }
+    );
+    assert.equal(kicked.status, 200);
+
+    // Plenty of room remains (capacity 4, only the host left), but a KICKED
+    // member must never be allowed to walk back in with the join code.
+    const rejoin = await request(`/api/v1/meetings/${meetingId}/join`, {
+      method: "POST",
+      headers: { authorization: "Bearer mock-token-user-2" },
+      body: JSON.stringify({ joinCode, meetingNickname: "게스트닉2" })
+    });
+    assert.equal(rejoin.status, 403);
+    const rejoinBody = await rejoin.json();
+    assert.equal(rejoinBody.error.code, "PREVIOUSLY_KICKED");
   });
 
   it("archives a past-due meeting in the completed home section without changing its status", async () => {
@@ -386,5 +498,35 @@ describe("DAMO mock API", () => {
     const home = await request("/api/v1/me/home");
     const homeBody = await home.json();
     assert.equal(homeBody.data.hasVoteAlert, false);
+  });
+
+  it("expires a login session 12 hours after it was created", async () => {
+    await store.reset();
+    const signup = await request("/api/v1/auth/test/signup", {
+      method: "POST",
+      body: JSON.stringify({
+        loginId: "session-ttl-user",
+        nickname: "세션테스트",
+        password: "pw1234"
+      })
+    });
+    assert.equal(signup.status, 201);
+    const { accessToken } = (await signup.json()).data;
+
+    const stillValid = await request("/api/v1/me", {
+      headers: { authorization: `Bearer ${accessToken}` }
+    });
+    assert.equal(stillValid.status, 200);
+
+    assert.ok(store instanceof MockStore);
+    const session = store.tokens.get(accessToken)!;
+    session.createdAt = Date.now() - 13 * 60 * 60 * 1000;
+
+    const expired = await request("/api/v1/me", {
+      headers: { authorization: `Bearer ${accessToken}` }
+    });
+    assert.equal(expired.status, 401);
+    const expiredBody = await expired.json();
+    assert.equal(expiredBody.error.code, "INVALID_TOKEN");
   });
 });

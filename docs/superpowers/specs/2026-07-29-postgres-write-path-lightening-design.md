@@ -86,9 +86,11 @@ private async withMeetingLock<T>(
 - `docs/database.md`에 락 전략 변경(전역 락 → `meeting:{id}` 스코프 락) 한 줄 추가.
 - `docs/local-development.md`에 테스트용 Supabase 프로젝트 설정 방법(`TEST_DATABASE_URL`) 안내 추가.
 
+> **범위 재확장 (구현 중 결정, 2026-07-29)**: Task 3(`withMeetingLock` 통일) 코드 리뷰에서 Critical 등급 문제가 발견됐다 — 일부 메서드만 모임별 락으로 옮기고 나머지가 전역 락(`write()`)에 남아있으면, 서로 다른 락 네임스페이스라 서로를 막지 못한다. `write()`의 `saveSnapshot()`은 `vote_choices`/`candidate_recommendations`를 통째로 지웠다가 자기 스냅샷 기준으로 재삽입하므로, 무관한 모임의 `write()` 트랜잭션이 모임별 락 트랜잭션이 방금 커밋한 데이터를 조용히 지울 수 있다. 임시방편(이중 락)보다 근본 해결이 낫다고 판단해 `leaveMeeting`, `kickMember`, `updateUserPlace`, `unregisterUserPlace`도 이번 배치에 포함시켰다 — 자세한 내용은 구현 계획 문서 상단의 "범위 확장" 노트 참고.
+
 ## 이번에 다루지 않는 것
 
-- `leaveMeeting`, `kickMember`, `updateUserPlace`, `unregisterUserPlace`, `reset`의 SQL 전환 (다음 사이클)
+- `reset`의 SQL 전환 — DB 전체 초기화가 목적이라 대상에서 제외 (실사용자 동시 트래픽과 무관하고, 프로덕션에서는 `DAMO_ENABLE_DB_RESET`으로 차단됨)
 - 실제 OAuth 연동, 인증 토큰 서명·만료 정책
 - 5초 폴링 → WebSocket/SSE 전환
 - API 요청 제한·보안 로그

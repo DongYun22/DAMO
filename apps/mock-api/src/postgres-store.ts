@@ -14,16 +14,21 @@ import type {
   Purpose,
   RecurrenceType,
   RepeatMeetingInput,
+  UpdateMeetingInput,
   User,
   UserPlace,
-  VoteSessionView
+  VoteResults,
+  VoteSessionView,
+  VoteStatus
 } from "@damo/contracts";
 import type { Pool, PoolClient } from "pg";
 import { createDatabasePool } from "./database.js";
 import { webBaseUrl } from "./config.js";
 import {
   MockStore,
+  SESSION_TTL_HOURS,
   StoreError,
+  nextRecurringMeetingAt,
   type CandidateRecord,
   type ChoiceRecord,
   type MeetingRecord,
@@ -114,6 +119,10 @@ const userPlaceFromRow = (row: UserPlaceRow): UserPlace => ({
 
 export class PostgresStore {
   constructor(private readonly pool: Pool = createDatabasePool()) {}
+
+  private randomJoinCodeCandidate() {
+    return Math.floor(1000 + Math.random() * 9000).toString();
+  }
 
   private async queryPublicCandidates(
     client: PoolClient,
@@ -266,6 +275,122 @@ export class PostgresStore {
         candidateA,
         candidateB
       }
+    };
+  }
+
+  private async computeVoteResults(
+    client: PoolClient,
+    meetingId: string,
+    userId: string
+  ): Promise<VoteResults> {
+    const meetingResult = await client.query<{
+      status: MeetingStatus;
+      finalCandidateId: string | null;
+      memberId: string | null;
+    }>(
+      `
+        select m.status, m.final_candidate_id as "finalCandidateId", member.id as "memberId"
+        from meetings m
+        left join meeting_members member
+          on member.meeting_id = m.id
+          and member.user_id = $2
+          and member.status = 'ACTIVE'
+        where m.id = $1 and m.status <> 'DELETED'
+      `,
+      [meetingId, userId]
+    );
+    const meeting = meetingResult.rows[0];
+    if (!meeting) {
+      throw new StoreError(404, "MEETING_NOT_FOUND", "모임을 찾을 수 없습니다.");
+    }
+    if (!meeting.memberId) {
+      throw new StoreError(403, "MEETING_ACCESS_DENIED", "모임원이 아닙니다.");
+    }
+
+    const voteResult = await client.query<{ status: VoteStatus }>(
+      `select status from votes where meeting_id = $1`,
+      [meetingId]
+    );
+    const vote = voteResult.rows[0];
+    if (!vote) {
+      throw new StoreError(404, "VOTE_NOT_FOUND", "투표를 찾을 수 없습니다.");
+    }
+
+    const sessionResult = await client.query<{
+      userId: string;
+      status: "NOT_STARTED" | "IN_PROGRESS" | "COMPLETED";
+    }>(
+      `select user_id as "userId", status from vote_sessions where meeting_id = $1`,
+      [meetingId]
+    );
+    const sessions = sessionResult.rows;
+
+    const voteCountResult = await client.query<{ candidateId: string; voteCount: number }>(
+      `
+        select
+          choice.selected_candidate_id as "candidateId",
+          count(*)::int as "voteCount"
+        from vote_choices choice
+        join vote_sessions session on session.id = choice.session_id
+        where session.meeting_id = $1
+        group by choice.selected_candidate_id
+      `,
+      [meetingId]
+    );
+    const voteCounts = new Map(
+      voteCountResult.rows.map((row) => [row.candidateId, row.voteCount])
+    );
+
+    const candidates = await this.queryPublicCandidates(client, meetingId, userId);
+    const raw = candidates
+      .map((candidate) => ({
+        candidate,
+        voteCount: voteCounts.get(candidate.id) ?? 0,
+        recommendationCount: candidate.recommendationCount
+      }))
+      .sort(
+        (a, b) =>
+          b.voteCount - a.voteCount ||
+          b.recommendationCount - a.recommendationCount ||
+          a.candidate.place.name.localeCompare(b.candidate.place.name)
+      );
+
+    let previousKey = "";
+    let rank = 0;
+    const results = raw.map((item, index) => {
+      const key = `${item.voteCount}:${item.recommendationCount}`;
+      if (key !== previousKey) rank = index + 1;
+      previousKey = key;
+      const sameRankCount = raw.filter(
+        (other) =>
+          other.voteCount === item.voteCount &&
+          other.recommendationCount === item.recommendationCount
+      ).length;
+      return {
+        ...item,
+        rank,
+        isJointRank: sameRankCount > 1,
+        isFinal: meeting.finalCandidateId === item.candidate.id
+      };
+    });
+
+    const tiedFirstCandidateIds = results
+      .filter((result) => result.rank === 1)
+      .map((result) => result.candidate.id);
+    const mySession = sessions.find((session) => session.userId === userId);
+
+    return {
+      meetingId,
+      voteStatus: vote.status,
+      meetingStatus: meeting.status,
+      myVoteCompleted: mySession?.status === "COMPLETED",
+      completedMembers: sessions.filter((session) => session.status === "COMPLETED").length,
+      totalMembers: sessions.length,
+      incompleteMembers: sessions.filter((session) => session.status !== "COMPLETED").length,
+      results,
+      tiedFirstCandidateIds,
+      finalCandidateId: meeting.finalCandidateId,
+      updatedAt: new Date().toISOString()
     };
   }
 
@@ -909,13 +1034,26 @@ export class PostgresStore {
     }
   }
 
-  private async read<T>(operation: (store: MockStore) => T): Promise<T> {
+  // Acquires one or more per-transaction advisory locks, in the exact order
+  // given, then runs `operation`. Callers that need more than one lock MUST
+  // pass keys already in a globally-consistent order (see `placeLockKeys`/
+  // `meetingLockKeys` below: place keys before meeting keys, ascending
+  // within each category) so that two methods locking overlapping key sets
+  // can never form a wait-for cycle.
+  private async withLocks<T>(
+    lockKeys: string[],
+    operation: (client: PoolClient) => Promise<T>
+  ): Promise<T> {
     const client = await this.pool.connect();
     try {
-      await client.query("begin transaction isolation level repeatable read read only");
-      const store = new MockStore();
-      store.hydrate(await this.loadSnapshot(client));
-      const result = operation(store);
+      await client.query("begin");
+      const acquired = new Set<string>();
+      for (const key of lockKeys) {
+        if (acquired.has(key)) continue;
+        acquired.add(key);
+        await client.query("select pg_advisory_xact_lock(hashtext($1))", [key]);
+      }
+      const result = await operation(client);
       await client.query("commit");
       return result;
     } catch (error) {
@@ -924,6 +1062,235 @@ export class PostgresStore {
     } finally {
       client.release();
     }
+  }
+
+  private async withMeetingLock<T>(
+    meetingId: string,
+    operation: (client: PoolClient) => Promise<T>
+  ): Promise<T> {
+    return this.withLocks([`meeting:${meetingId}`], async (client) => {
+      await this.autoCompletePastDueMeeting(client, meetingId);
+      return operation(client);
+    });
+  }
+
+  // Sorted so that any two callers locking overlapping sets of places always
+  // acquire them in the same relative order (deadlock avoidance).
+  private placeLockKeys(userPlaceIds: string[]): string[] {
+    return [...new Set(userPlaceIds)].sort().map((id) => `place:${id}`);
+  }
+
+  private meetingLockKeys(meetingIds: string[]): string[] {
+    return [...new Set(meetingIds)].sort().map((id) => `meeting:${id}`);
+  }
+
+  // Precondition: the caller MUST have already updated the source meeting's
+  // `status` away from RECRUITING/VOTING/FINAL_SELECTION (e.g. to COMPLETED)
+  // in the same transaction before calling this method. The INSERT below
+  // reuses the source meeting's `join_code` verbatim so members can find the
+  // next occurrence without a new code, but `meetings_active_join_code_unique`
+  // is a partial unique index that only covers those three "active" statuses.
+  // If the source row's status hasn't been flipped out of that set yet, this
+  // INSERT collides with the source row itself.
+  private async createNextRecurringOccurrence(
+    client: PoolClient,
+    meeting: {
+      id: string;
+      name: string;
+      hostUserId: string;
+      capacity: number;
+      meetingAt: string;
+      purpose: Purpose;
+      mood: Mood;
+      joinCode: string;
+      seriesId: string | null;
+      recurrenceType: RecurrenceType | null;
+      recurrenceNextAt: string | null;
+      nextMeetingId: string | null;
+    }
+  ) {
+    if (!meeting.recurrenceType || meeting.nextMeetingId) return;
+    const meetingAt =
+      meeting.recurrenceType === "CUSTOM"
+        ? meeting.recurrenceNextAt
+        : nextRecurringMeetingAt(meeting.meetingAt, meeting.recurrenceType);
+    if (!meetingAt) return;
+
+    const recurrenceType = meeting.recurrenceType === "CUSTOM" ? null : meeting.recurrenceType;
+    const seriesId = meeting.seriesId ?? meeting.id;
+    const nextMeetingId = randomUUID();
+
+    // Primary attempt reuses the source meeting's own join_code (so members
+    // don't need a new code for the common case). On the rare chance that
+    // some unrelated active meeting elsewhere already holds that code, fall
+    // back to freshly generated candidates using the same bounded
+    // savepoint-retry pattern as createMeeting.
+    let inserted = false;
+    for (let attempt = 0; attempt < 50 && !inserted; attempt += 1) {
+      const joinCode = attempt === 0 ? meeting.joinCode : this.randomJoinCodeCandidate();
+      await client.query("savepoint next_occurrence_join_code_attempt");
+      try {
+        await client.query(
+          `
+            insert into meetings (
+              id, name, host_user_id, capacity, meeting_at, purpose, mood,
+              join_code, status, series_id, parent_meeting_id, recurrence_type
+            )
+            values ($1, $2, $3, $4, $5, $6, $7, $8, 'RECRUITING', $9, $10, $11)
+          `,
+          [
+            nextMeetingId,
+            meeting.name,
+            meeting.hostUserId,
+            meeting.capacity,
+            meetingAt,
+            meeting.purpose,
+            meeting.mood,
+            joinCode,
+            seriesId,
+            meeting.id,
+            recurrenceType
+          ]
+        );
+        inserted = true;
+      } catch (error) {
+        if (
+          typeof error === "object" &&
+          error !== null &&
+          "code" in error &&
+          error.code === "23505"
+        ) {
+          await client.query("rollback to savepoint next_occurrence_join_code_attempt");
+          continue;
+        }
+        throw error;
+      }
+    }
+    if (!inserted) {
+      throw new StoreError(500, "JOIN_CODE_EXHAUSTED", "가입 코드를 발급할 수 없습니다.");
+    }
+
+    const memberRows = await client.query<{
+      userId: string;
+      meetingNickname: string;
+      role: "HOST" | "MEMBER";
+    }>(
+      `
+        select user_id as "userId", meeting_nickname as "meetingNickname", role
+        from meeting_members
+        where meeting_id = $1 and status = 'ACTIVE'
+      `,
+      [meeting.id]
+    );
+    for (const member of memberRows.rows) {
+      await client.query(
+        `
+          insert into meeting_members (id, meeting_id, user_id, meeting_nickname, role, status)
+          values ($1, $2, $3, $4, $5, 'ACTIVE')
+        `,
+        [randomUUID(), nextMeetingId, member.userId, member.meetingNickname, member.role]
+      );
+    }
+
+    await client.query(
+      `update meetings set next_meeting_id = $2, updated_at = now() where id = $1`,
+      [meeting.id, nextMeetingId]
+    );
+  }
+
+  // Called by `withMeetingLock` at the start of every meeting-locked
+  // operation, and by `home()` for each stale meeting it's about to
+  // display, so a meeting whose date has passed is transitioned to
+  // COMPLETED atomically inside the same advisory lock as whatever
+  // operation triggered it — never as a separate, un-locked step. No-op
+  // unless the meeting is still RECRUITING/VOTING/FINAL_SELECTION AND its
+  // meeting_at has passed; otherwise every caller's own status check
+  // (RECRUITING-only, VOTING-only, etc.) naturally rejects with its
+  // existing error code once this has run, so no other method needs its
+  // own past-due check.
+  //
+  // Mirrors closeVote's solo-winner/tie logic exactly, except a tie (or no
+  // votes at all) resolves straight to COMPLETED with a null
+  // final_candidate_id instead of the intermediate FINAL_SELECTION state —
+  // there's no host present to make the manual pick a past-due meeting
+  // would otherwise wait on.
+  private async autoCompletePastDueMeeting(client: PoolClient, meetingId: string): Promise<void> {
+    const meetingResult = await client.query<{
+      status: MeetingStatus;
+      meetingAt: Date | string;
+      name: string;
+      hostUserId: string;
+      capacity: number;
+      purpose: Purpose;
+      mood: Mood;
+      joinCode: string;
+      seriesId: string | null;
+      recurrenceType: RecurrenceType | null;
+      recurrenceNextAt: Date | string | null;
+      nextMeetingId: string | null;
+    }>(
+      `
+        select
+          status, meeting_at as "meetingAt", name, host_user_id as "hostUserId",
+          capacity, purpose, mood, join_code as "joinCode", series_id as "seriesId",
+          recurrence_type as "recurrenceType", recurrence_next_at as "recurrenceNextAt",
+          next_meeting_id as "nextMeetingId"
+        from meetings
+        where id = $1
+        for update
+      `,
+      [meetingId]
+    );
+    const meeting = meetingResult.rows[0];
+    if (!meeting) return;
+    if (
+      meeting.status !== "RECRUITING" &&
+      meeting.status !== "VOTING" &&
+      meeting.status !== "FINAL_SELECTION"
+    ) {
+      return;
+    }
+    if (new Date(meeting.meetingAt).getTime() >= Date.now()) return;
+
+    let finalCandidateId: string | null = null;
+    if (meeting.status === "VOTING" || meeting.status === "FINAL_SELECTION") {
+      // The host is guaranteed to still be an ACTIVE member (leaveMeeting
+      // rejects the host, kickMember rejects kicking the host), so this
+      // always satisfies computeVoteResults' membership check regardless of
+      // who/what triggered this transition.
+      const results = await this.computeVoteResults(client, meetingId, meeting.hostUserId);
+      if (results.tiedFirstCandidateIds.length === 1) {
+        finalCandidateId = results.tiedFirstCandidateIds[0]!;
+      }
+      await client.query(
+        `update votes set status = 'CLOSED', closed_at = now() where meeting_id = $1`,
+        [meetingId]
+      );
+    }
+
+    await client.query(
+      `
+        update meetings
+        set status = 'COMPLETED', final_candidate_id = $2, updated_at = now()
+        where id = $1
+      `,
+      [meetingId, finalCandidateId]
+    );
+
+    await this.createNextRecurringOccurrence(client, {
+      id: meetingId,
+      name: meeting.name,
+      hostUserId: meeting.hostUserId,
+      capacity: meeting.capacity,
+      meetingAt: timestamp(meeting.meetingAt),
+      purpose: meeting.purpose,
+      mood: meeting.mood,
+      joinCode: meeting.joinCode,
+      seriesId: meeting.seriesId,
+      recurrenceType: meeting.recurrenceType,
+      recurrenceNextAt: nullableTimestamp(meeting.recurrenceNextAt),
+      nextMeetingId: meeting.nextMeetingId
+    });
   }
 
   private async write<T>(
@@ -1034,8 +1401,12 @@ export class PostgresStore {
   async userIdForToken(token: string | undefined) {
     if (!token) throw new StoreError(401, "INVALID_TOKEN", "로그인 정보가 만료되었습니다.");
     const result = await this.pool.query<{ userId: string }>(
-      `select user_id as "userId" from auth_sessions where access_token = $1`,
-      [token]
+      `
+        select user_id as "userId"
+        from auth_sessions
+        where access_token = $1 and created_at > now() - make_interval(hours => $2)
+      `,
+      [token, SESSION_TTL_HOURS]
     );
     const userId = result.rows[0]?.userId;
     if (!userId) throw new StoreError(401, "INVALID_TOKEN", "로그인 정보가 만료되었습니다.");
@@ -1334,15 +1705,79 @@ export class PostgresStore {
     mood: Mood,
     applyToMeetingIds: string[]
   ) {
-    return this.write((store) =>
-      store.updateUserPlace(
-        userId,
-        userPlaceId,
-        purpose,
-        mood,
-        applyToMeetingIds
-      )
-    );
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      const sortedMeetingIds = [...new Set(applyToMeetingIds)].sort();
+      for (const meetingId of sortedMeetingIds) {
+        await client.query("select pg_advisory_xact_lock(hashtext($1))", [`meeting:${meetingId}`]);
+      }
+
+      const placeResult = await client.query<{ userPlaceId: string; placeId: string }>(
+        `
+          update user_places
+          set purpose = $3, mood = $4, updated_at = now()
+          where id = $1 and user_id = $2 and is_active = true
+          returning id as "userPlaceId", place_id as "placeId"
+        `,
+        [userPlaceId, userId, purpose, mood]
+      );
+      const place = placeResult.rows[0];
+      if (!place) {
+        throw new StoreError(404, "USER_PLACE_NOT_FOUND", "저장된 장소를 찾을 수 없습니다.");
+      }
+
+      for (const meetingId of sortedMeetingIds) {
+        const meetingResult = await client.query<{ status: MeetingStatus }>(
+          `select status from meetings where id = $1 and status <> 'DELETED'`,
+          [meetingId]
+        );
+        const meeting = meetingResult.rows[0];
+        if (!meeting) {
+          throw new StoreError(404, "MEETING_NOT_FOUND", "모임을 찾을 수 없습니다.");
+        }
+        if (meeting.status !== "RECRUITING") continue;
+
+        await client.query(
+          `
+            update candidate_recommendations recommendation
+            set purpose = $4, mood = $5
+            from meeting_candidates candidate, meeting_members member
+            where recommendation.candidate_id = candidate.id
+              and recommendation.member_id = member.id
+              and candidate.meeting_id = $1
+              and candidate.place_id = $2
+              and member.meeting_id = $1
+              and member.user_id = $3
+              and member.status = 'ACTIVE'
+          `,
+          [meetingId, place.placeId, userId, purpose, mood]
+        );
+        await client.query(
+          `
+            delete from meeting_candidates candidate
+            where candidate.meeting_id = $1
+              and not exists (
+                select 1 from candidate_recommendations r where r.candidate_id = candidate.id
+              )
+          `,
+          [meetingId]
+        );
+        await client.query(`update meetings set updated_at = now() where id = $1`, [meetingId]);
+      }
+
+      await client.query("commit");
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
+    const item = (await this.queryUserPlaces(userId, userPlaceId))[0];
+    if (!item) {
+      throw new StoreError(500, "USER_PLACE_SAVE_FAILED", "내 장소 저장 결과를 찾을 수 없습니다.");
+    }
+    return item;
   }
 
   async unregisterUserPlace(
@@ -1350,16 +1785,134 @@ export class PostgresStore {
     userPlaceId: string,
     applyToActiveMeetings: boolean
   ) {
-    return this.write((store) =>
-      store.unregisterUserPlace(
-        userId,
-        userPlaceId,
-        applyToActiveMeetings
-      )
-    );
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+
+      // Acquire the place lock BEFORE discovering which meetings to clean
+      // up. A concurrent `replaceMyCandidates` for this same userPlaceId
+      // acquires this exact lock (before its own meeting lock, see
+      // `replaceMyCandidates`) before inserting any candidate referencing
+      // this place — so whichever of the two gets here first fully
+      // completes before the other proceeds. That closes the race where a
+      // brand-new candidate registration (in a meeting not yet known to
+      // this call) could otherwise slip in after the meeting discovery
+      // query below and be missed entirely.
+      await client.query("select pg_advisory_xact_lock(hashtext($1))", [`place:${userPlaceId}`]);
+
+      let meetingIds: string[] = [];
+      if (applyToActiveMeetings) {
+        const meetingsResult = await client.query<{ id: string }>(
+          `
+            select distinct m.id
+            from meetings m
+            join meeting_members member
+              on member.meeting_id = m.id and member.user_id = $1 and member.status = 'ACTIVE'
+            where m.status = 'RECRUITING'
+            order by m.id
+          `,
+          [userId]
+        );
+        meetingIds = [...new Set(meetingsResult.rows.map((row) => row.id))].sort();
+        for (const meetingId of meetingIds) {
+          await client.query("select pg_advisory_xact_lock(hashtext($1))", [`meeting:${meetingId}`]);
+        }
+      }
+
+      const placeResult = await client.query<{ userPlaceId: string }>(
+        `
+          update user_places
+          set is_active = false, updated_at = now()
+          where id = $1 and user_id = $2 and is_active = true
+          returning id as "userPlaceId"
+        `,
+        [userPlaceId, userId]
+      );
+      if (!placeResult.rows[0]) {
+        throw new StoreError(404, "USER_PLACE_NOT_FOUND", "저장된 장소를 찾을 수 없습니다.");
+      }
+
+      for (const meetingId of meetingIds) {
+        const recheckResult = await client.query<{
+          meetingStatus: MeetingStatus;
+          memberStatus: string | null;
+        }>(
+          `
+            select
+              m.status as "meetingStatus",
+              member.status as "memberStatus"
+            from meetings m
+            left join meeting_members member
+              on member.meeting_id = m.id and member.user_id = $2
+            where m.id = $1
+          `,
+          [meetingId, userId]
+        );
+        const recheck = recheckResult.rows[0];
+        if (!recheck || recheck.meetingStatus !== "RECRUITING" || recheck.memberStatus !== "ACTIVE") {
+          continue;
+        }
+
+        await client.query(
+          `
+            delete from candidate_recommendations recommendation
+            using meeting_candidates candidate, meeting_members member
+            where recommendation.candidate_id = candidate.id
+              and recommendation.member_id = member.id
+              and candidate.meeting_id = $1
+              and member.meeting_id = $1
+              and member.user_id = $2
+              and member.status = 'ACTIVE'
+              and recommendation.user_place_id = $3
+          `,
+          [meetingId, userId, userPlaceId]
+        );
+        await client.query(
+          `
+            delete from meeting_candidates candidate
+            where candidate.meeting_id = $1
+              and not exists (
+                select 1 from candidate_recommendations r where r.candidate_id = candidate.id
+              )
+          `,
+          [meetingId]
+        );
+        await client.query(`update meetings set updated_at = now() where id = $1`, [meetingId]);
+      }
+
+      await client.query("commit");
+      return { userPlaceId, unregistered: true, appliedToActiveMeetings: applyToActiveMeetings };
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   async home(userId: string) {
+    // Opportunistically complete any of the caller's own past-due meetings
+    // before reading them, so `status` in the response below is the real,
+    // persisted COMPLETED — not just the `isPastDue` display flag. Each
+    // meeting gets its own short-lived lock+transaction (acquired and
+    // released one at a time, via the exact same `withMeetingLock` every
+    // other write goes through) rather than one big multi-meeting
+    // transaction, so this can never deadlock against any other operation.
+    const staleResult = await this.pool.query<{ id: string }>(
+      `
+        select distinct m.id
+        from meetings m
+        join meeting_members member
+          on member.meeting_id = m.id and member.user_id = $1 and member.status = 'ACTIVE'
+        where m.status in ('RECRUITING', 'VOTING', 'FINAL_SELECTION')
+          and m.meeting_at < now()
+      `,
+      [userId]
+    );
+    for (const { id: staleMeetingId } of staleResult.rows) {
+      await this.withMeetingLock(staleMeetingId, async () => {});
+    }
+
     const result = await this.pool.query<{
       id: string;
       name: string;
@@ -1503,7 +2056,128 @@ export class PostgresStore {
   }
 
   async createMeeting(userId: string, input: CreateMeetingInput) {
-    return this.write((store) => store.createMeeting(userId, input));
+    const client = await this.pool.connect();
+    let meetingId = "";
+    try {
+      await client.query("begin");
+      const userResult = await client.query<{ nickname: string }>(
+        `select nickname from users where id = $1`,
+        [userId]
+      );
+      const nickname = userResult.rows[0]?.nickname;
+      if (!nickname) {
+        throw new StoreError(401, "AUTH_REQUIRED", "로그인이 필요합니다.");
+      }
+
+      let inserted = false;
+      for (let attempt = 0; attempt < 50 && !inserted; attempt += 1) {
+        const candidateId = randomUUID();
+        const joinCode = this.randomJoinCodeCandidate();
+        await client.query("savepoint join_code_attempt");
+        try {
+          await client.query(
+            `
+              insert into meetings (
+                id, name, host_user_id, capacity, meeting_at, purpose, mood,
+                join_code, status
+              )
+              values ($1, $2, $3, $4, $5, $6, $7, $8, 'RECRUITING')
+            `,
+            [
+              candidateId,
+              input.name,
+              userId,
+              input.capacity,
+              input.meetingAt,
+              input.purpose,
+              input.mood,
+              joinCode
+            ]
+          );
+          meetingId = candidateId;
+          inserted = true;
+        } catch (error) {
+          if (
+            typeof error === "object" &&
+            error !== null &&
+            "code" in error &&
+            error.code === "23505"
+          ) {
+            await client.query("rollback to savepoint join_code_attempt");
+            continue;
+          }
+          throw error;
+        }
+      }
+      if (!inserted) {
+        throw new StoreError(500, "JOIN_CODE_EXHAUSTED", "가입 코드를 발급할 수 없습니다.");
+      }
+
+      await client.query(
+        `
+          insert into meeting_members (id, meeting_id, user_id, meeting_nickname, role, status)
+          values ($1, $2, $3, $4, 'HOST', 'ACTIVE')
+        `,
+        [randomUUID(), meetingId, userId, nickname]
+      );
+      await client.query("commit");
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
+    return this.detail(meetingId, userId);
+  }
+
+  async updateMeeting(meetingId: string, userId: string, input: UpdateMeetingInput) {
+    await this.withMeetingLock(meetingId, async (client) => {
+      const meetingResult = await client.query<{
+        status: MeetingStatus;
+        hostUserId: string;
+      }>(
+        `
+          select status, host_user_id as "hostUserId"
+          from meetings
+          where id = $1 and status <> 'DELETED'
+          for update
+        `,
+        [meetingId]
+      );
+      const meeting = meetingResult.rows[0];
+      if (!meeting) {
+        throw new StoreError(404, "MEETING_NOT_FOUND", "모임을 찾을 수 없습니다.");
+      }
+      if (meeting.hostUserId !== userId) {
+        throw new StoreError(403, "HOST_ONLY", "모임장만 실행할 수 있습니다.");
+      }
+      if (meeting.status !== "RECRUITING") {
+        throw new StoreError(409, "MEETING_NOT_RECRUITING", "이미 투표가 시작된 모임입니다.");
+      }
+
+      const memberCountResult = await client.query<{ count: string }>(
+        `
+          select count(*)::text as count
+          from meeting_members
+          where meeting_id = $1 and status = 'ACTIVE'
+        `,
+        [meetingId]
+      );
+      const activeMemberCount = Number(memberCountResult.rows[0]?.count ?? 0);
+      if (input.capacity < activeMemberCount) {
+        throw new StoreError(422, "CAPACITY_TOO_SMALL", "선택한 모임원 수보다 정원을 작게 설정할 수 없습니다.");
+      }
+
+      await client.query(
+        `
+          update meetings
+          set name = $2, capacity = $3, meeting_at = $4, purpose = $5, mood = $6, updated_at = now()
+          where id = $1
+        `,
+        [meetingId, input.name, input.capacity, input.meetingAt, input.purpose, input.mood]
+      );
+    });
+    return this.detail(meetingId, userId);
   }
 
   async repeatMeeting(
@@ -1511,9 +2185,160 @@ export class PostgresStore {
     userId: string,
     input: RepeatMeetingInput
   ) {
-    return this.write((store) =>
-      store.repeatMeeting(sourceMeetingId, userId, input)
-    );
+    const newMeetingId = await this.withMeetingLock(sourceMeetingId, async (client) => {
+      const sourceResult = await client.query<{
+        hostUserId: string;
+        status: MeetingStatus;
+        joinCode: string;
+        seriesId: string | null;
+        nextMeetingId: string | null;
+      }>(
+        `
+          select
+            host_user_id as "hostUserId", status, join_code as "joinCode",
+            series_id as "seriesId", next_meeting_id as "nextMeetingId"
+          from meetings
+          where id = $1 and status <> 'DELETED'
+        `,
+        [sourceMeetingId]
+      );
+      const source = sourceResult.rows[0];
+      if (!source) {
+        throw new StoreError(404, "MEETING_NOT_FOUND", "모임을 찾을 수 없습니다.");
+      }
+      if (source.hostUserId !== userId) {
+        throw new StoreError(403, "HOST_ONLY", "모임장만 실행할 수 있습니다.");
+      }
+      if (source.status !== "COMPLETED") {
+        throw new StoreError(409, "MEETING_NOT_COMPLETED", "완료된 모임에서만 다시 만나기를 시작할 수 있습니다.");
+      }
+      if (source.nextMeetingId) {
+        throw new StoreError(
+          409,
+          "NEXT_MEETING_ALREADY_EXISTS",
+          "이미 다음 회차가 만들어져 있습니다.",
+          { meetingId: source.nextMeetingId }
+        );
+      }
+
+      const memberResult = await client.query<{
+        id: string;
+        userId: string;
+        meetingNickname: string;
+        role: "HOST" | "MEMBER";
+      }>(
+        `
+          select id, user_id as "userId", meeting_nickname as "meetingNickname", role
+          from meeting_members
+          where meeting_id = $1 and status = 'ACTIVE'
+        `,
+        [sourceMeetingId]
+      );
+      const sourceMembers = memberResult.rows;
+      const selectedIds = new Set(input.memberIds);
+      const selectedMembers = sourceMembers.filter((member) => selectedIds.has(member.id));
+      const hostMember = sourceMembers.find((member) => member.role === "HOST");
+      if (!hostMember || !selectedIds.has(hostMember.id)) {
+        throw new StoreError(422, "HOST_MEMBER_REQUIRED", "모임장은 다음 회차에 반드시 포함되어야 합니다.");
+      }
+      if (selectedMembers.length !== selectedIds.size) {
+        throw new StoreError(422, "INVALID_MEMBER_SELECTION", "이전 모임에 참여한 모임원만 선택할 수 있습니다.");
+      }
+      if (selectedMembers.length > input.capacity) {
+        throw new StoreError(422, "CAPACITY_TOO_SMALL", "선택한 모임원 수보다 정원을 작게 설정할 수 없습니다.");
+      }
+      if (
+        input.recurrence?.type === "CUSTOM" &&
+        (!input.recurrence.customNextMeetingAt ||
+          new Date(input.recurrence.customNextMeetingAt).getTime() <=
+            new Date(input.meetingAt).getTime())
+      ) {
+        throw new StoreError(
+          422,
+          "INVALID_CUSTOM_RECURRENCE_DATE",
+          "직접 입력한 다음 일정은 이번 회차보다 뒤여야 합니다."
+        );
+      }
+
+      const seriesId = source.seriesId ?? sourceMeetingId;
+
+      // Reuses the source's join_code (same continuity intent as
+      // createNextRecurringOccurrence). The source is already COMPLETED
+      // (checked above), so it's outside meetings_active_join_code_unique's
+      // predicate — but an unrelated active meeting could coincidentally
+      // hold the same code, so retry with a fresh random code on collision,
+      // same savepoint pattern as createMeeting/createNextRecurringOccurrence.
+      let newId = "";
+      let inserted = false;
+      for (let attempt = 0; attempt < 50 && !inserted; attempt += 1) {
+        const candidateId = randomUUID();
+        const joinCode = attempt === 0 ? source.joinCode : this.randomJoinCodeCandidate();
+        await client.query("savepoint repeat_meeting_join_code_attempt");
+        try {
+          await client.query(
+            `
+              insert into meetings (
+                id, name, host_user_id, capacity, meeting_at, purpose, mood,
+                join_code, status, series_id, parent_meeting_id,
+                recurrence_type, recurrence_next_at
+              )
+              values (
+                $1, $2, $3, $4, $5, $6, $7, $8, 'RECRUITING', $9, $10, $11, $12
+              )
+            `,
+            [
+              candidateId,
+              input.name,
+              source.hostUserId,
+              input.capacity,
+              input.meetingAt,
+              input.purpose,
+              input.mood,
+              joinCode,
+              seriesId,
+              sourceMeetingId,
+              input.recurrence?.type ?? null,
+              input.recurrence?.customNextMeetingAt ?? null
+            ]
+          );
+          newId = candidateId;
+          inserted = true;
+        } catch (error) {
+          if (
+            typeof error === "object" &&
+            error !== null &&
+            "code" in error &&
+            error.code === "23505"
+          ) {
+            await client.query("rollback to savepoint repeat_meeting_join_code_attempt");
+            continue;
+          }
+          throw error;
+        }
+      }
+      if (!inserted) {
+        throw new StoreError(500, "JOIN_CODE_EXHAUSTED", "가입 코드를 발급할 수 없습니다.");
+      }
+
+      for (const member of selectedMembers) {
+        await client.query(
+          `
+            insert into meeting_members (id, meeting_id, user_id, meeting_nickname, role, status)
+            values ($1, $2, $3, $4, $5, 'ACTIVE')
+          `,
+          [randomUUID(), newId, member.userId, member.meetingNickname, member.role]
+        );
+      }
+
+      await client.query(
+        `update meetings set next_meeting_id = $2, updated_at = now() where id = $1`,
+        [sourceMeetingId, newId]
+      );
+
+      return newId;
+    });
+
+    return this.detail(newMeetingId, userId);
   }
 
   async configureMeetingRecurrence(
@@ -1608,7 +2433,52 @@ export class PostgresStore {
   }
 
   async lookupMeeting(joinCode: string) {
-    return this.read((store) => store.lookupMeeting(joinCode));
+    const result = await this.pool.query<{
+      id: string;
+      name: string;
+      purpose: Purpose;
+      mood: Mood;
+      meetingAt: Date | string;
+      capacity: number;
+      status: MeetingStatus;
+      currentMembers: number;
+    }>(
+      `
+        select
+          m.id,
+          m.name,
+          m.purpose,
+          m.mood,
+          m.meeting_at as "meetingAt",
+          m.capacity,
+          m.status,
+          (
+            select count(*)::int
+            from meeting_members active_member
+            where active_member.meeting_id = m.id
+              and active_member.status = 'ACTIVE'
+          ) as "currentMembers"
+        from meetings m
+        where m.join_code = $1
+          and m.status in ('RECRUITING', 'VOTING', 'FINAL_SELECTION')
+        limit 1
+      `,
+      [joinCode]
+    );
+    const row = result.rows[0];
+    if (!row) {
+      throw new StoreError(404, "MEETING_NOT_FOUND", "가입 가능한 모임을 찾을 수 없습니다.");
+    }
+    return {
+      id: row.id,
+      name: row.name,
+      purpose: row.purpose,
+      mood: row.mood,
+      meetingAt: timestamp(row.meetingAt),
+      currentMembers: row.currentMembers,
+      capacity: row.capacity,
+      canJoin: row.status === "RECRUITING" && row.currentMembers < row.capacity
+    };
   }
 
   async joinMeeting(
@@ -1617,9 +2487,89 @@ export class PostgresStore {
     joinCode: string,
     meetingNickname: string
   ) {
-    return this.write((store) =>
-      store.joinMeeting(userId, meetingId, joinCode, meetingNickname)
-    );
+    await this.withMeetingLock(meetingId, async (client) => {
+      const meetingResult = await client.query<{
+        joinCode: string;
+        status: MeetingStatus;
+        capacity: number;
+      }>(
+        `
+          select join_code as "joinCode", status, capacity
+          from meetings
+          where id = $1 and status <> 'DELETED'
+        `,
+        [meetingId]
+      );
+      const meeting = meetingResult.rows[0];
+      if (!meeting) {
+        throw new StoreError(404, "MEETING_NOT_FOUND", "모임을 찾을 수 없습니다.");
+      }
+      if (meeting.joinCode !== joinCode) {
+        throw new StoreError(422, "INVALID_JOIN_CODE", "가입 코드가 올바르지 않습니다.");
+      }
+      if (meeting.status !== "RECRUITING") {
+        throw new StoreError(409, "MEETING_NOT_RECRUITING", "이미 투표가 시작된 모임입니다.");
+      }
+
+      const existingResult = await client.query<{
+        id: string;
+        status: "ACTIVE" | "LEFT" | "KICKED";
+      }>(
+        `select id, status from meeting_members where meeting_id = $1 and user_id = $2`,
+        [meetingId, userId]
+      );
+      const existing = existingResult.rows[0];
+
+      // A KICKED member was removed by the host and must never be able to
+      // walk back in with the join code, regardless of capacity.
+      if (existing && existing.status === "KICKED") {
+        throw new StoreError(
+          403,
+          "PREVIOUSLY_KICKED",
+          "모임장에 의해 내보내진 모임에는 다시 가입할 수 없습니다."
+        );
+      }
+
+      // A brand-new member and a LEFT member rejoining both add a new
+      // ACTIVE seat, so both must be checked against capacity. An already-ACTIVE
+      // member calling joinMeeting again (e.g. a duplicate request) doesn't
+      // change the ACTIVE count, so it's exempt from the check.
+      if (!existing || existing.status !== "ACTIVE") {
+        const countResult = await client.query<{ count: number }>(
+          `
+            select count(*)::int as count
+            from meeting_members
+            where meeting_id = $1 and status = 'ACTIVE'
+          `,
+          [meetingId]
+        );
+        if ((countResult.rows[0]?.count ?? 0) >= meeting.capacity) {
+          throw new StoreError(409, "MEETING_CAPACITY_EXCEEDED", "모임 정원이 모두 찼습니다.");
+        }
+      }
+
+      if (!existing) {
+        await client.query(
+          `
+            insert into meeting_members (id, meeting_id, user_id, meeting_nickname, role, status)
+            values ($1, $2, $3, $4, 'MEMBER', 'ACTIVE')
+          `,
+          [randomUUID(), meetingId, userId, meetingNickname]
+        );
+      } else {
+        await client.query(
+          `
+            update meeting_members
+            set status = 'ACTIVE', meeting_nickname = $2, joined_at = now()
+            where id = $1
+          `,
+          [existing.id, meetingNickname]
+        );
+      }
+
+      await client.query("update meetings set updated_at = now() where id = $1", [meetingId]);
+    });
+    return this.detail(meetingId, userId);
   }
 
   async detail(meetingId: string, userId: string) {
@@ -1688,17 +2638,143 @@ export class PostgresStore {
   }
 
   async leaveMeeting(meetingId: string, userId: string) {
-    return this.write((store) => store.leaveMeeting(meetingId, userId));
+    return this.withMeetingLock(meetingId, async (client) => {
+      const meetingResult = await client.query<{ status: MeetingStatus }>(
+        `select status from meetings where id = $1 and status <> 'DELETED'`,
+        [meetingId]
+      );
+      const meeting = meetingResult.rows[0];
+      if (!meeting) {
+        throw new StoreError(404, "MEETING_NOT_FOUND", "모임을 찾을 수 없습니다.");
+      }
+      if (meeting.status !== "RECRUITING") {
+        throw new StoreError(409, "LEAVE_NOT_ALLOWED", "투표 시작 후에는 탈퇴할 수 없습니다.");
+      }
+
+      const memberResult = await client.query<{ id: string; role: "HOST" | "MEMBER" }>(
+        `
+          select id, role
+          from meeting_members
+          where meeting_id = $1 and user_id = $2 and status = 'ACTIVE'
+        `,
+        [meetingId, userId]
+      );
+      const member = memberResult.rows[0];
+      if (!member) {
+        throw new StoreError(404, "MEMBER_NOT_FOUND", "모임 참여 정보를 찾을 수 없습니다.");
+      }
+      if (member.role === "HOST") {
+        throw new StoreError(403, "HOST_CANNOT_LEAVE", "모임장은 탈퇴 대신 모임을 삭제해야 합니다.");
+      }
+
+      await client.query(`update meeting_members set status = 'LEFT' where id = $1`, [member.id]);
+      await client.query(
+        `
+          delete from candidate_recommendations recommendation
+          using meeting_candidates candidate
+          where recommendation.candidate_id = candidate.id
+            and candidate.meeting_id = $1
+            and recommendation.member_id = $2
+        `,
+        [meetingId, member.id]
+      );
+      await client.query(
+        `
+          delete from meeting_candidates candidate
+          where candidate.meeting_id = $1
+            and not exists (
+              select 1 from candidate_recommendations r where r.candidate_id = candidate.id
+            )
+        `,
+        [meetingId]
+      );
+      await client.query(`update meetings set updated_at = now() where id = $1`, [meetingId]);
+      return { meetingId, left: true };
+    });
   }
 
   async kickMember(meetingId: string, hostUserId: string, memberId: string) {
-    return this.write((store) =>
-      store.kickMember(meetingId, hostUserId, memberId)
-    );
+    await this.withMeetingLock(meetingId, async (client) => {
+      const meetingResult = await client.query<{
+        status: MeetingStatus;
+        hostUserId: string;
+      }>(
+        `select status, host_user_id as "hostUserId" from meetings where id = $1 and status <> 'DELETED'`,
+        [meetingId]
+      );
+      const meeting = meetingResult.rows[0];
+      if (!meeting) {
+        throw new StoreError(404, "MEETING_NOT_FOUND", "모임을 찾을 수 없습니다.");
+      }
+      if (meeting.hostUserId !== hostUserId) {
+        throw new StoreError(403, "HOST_ONLY", "모임장만 실행할 수 있습니다.");
+      }
+      if (meeting.status !== "RECRUITING") {
+        throw new StoreError(409, "KICK_NOT_ALLOWED", "투표 시작 후에는 모임원을 내보낼 수 없습니다.");
+      }
+
+      const memberResult = await client.query<{ id: string; role: "HOST" | "MEMBER" }>(
+        `select id, role from meeting_members where id = $1 and meeting_id = $2 and status = 'ACTIVE'`,
+        [memberId, meetingId]
+      );
+      const member = memberResult.rows[0];
+      if (!member || member.role === "HOST") {
+        throw new StoreError(422, "INVALID_MEMBER", "내보낼 수 없는 모임원입니다.");
+      }
+
+      await client.query(`update meeting_members set status = 'KICKED' where id = $1`, [member.id]);
+      await client.query(
+        `
+          delete from candidate_recommendations recommendation
+          using meeting_candidates candidate
+          where recommendation.candidate_id = candidate.id
+            and candidate.meeting_id = $1
+            and recommendation.member_id = $2
+        `,
+        [meetingId, member.id]
+      );
+      await client.query(
+        `
+          delete from meeting_candidates candidate
+          where candidate.meeting_id = $1
+            and not exists (
+              select 1 from candidate_recommendations r where r.candidate_id = candidate.id
+            )
+        `,
+        [meetingId]
+      );
+      await client.query(`update meetings set updated_at = now() where id = $1`, [meetingId]);
+    });
+    return this.detail(meetingId, hostUserId);
   }
 
   async deleteMeeting(meetingId: string, userId: string) {
-    return this.write((store) => store.deleteMeeting(meetingId, userId));
+    return this.withMeetingLock(meetingId, async (client) => {
+      const result = await client.query<{ hostUserId: string }>(
+        `
+          select host_user_id as "hostUserId"
+          from meetings
+          where id = $1 and status <> 'DELETED'
+        `,
+        [meetingId]
+      );
+      const meeting = result.rows[0];
+      if (!meeting) {
+        throw new StoreError(404, "MEETING_NOT_FOUND", "모임을 찾을 수 없습니다.");
+      }
+      if (meeting.hostUserId !== userId) {
+        throw new StoreError(403, "HOST_ONLY", "모임장만 실행할 수 있습니다.");
+      }
+      await client.query(
+        `
+          update meetings
+          set status = 'DELETED', deleted_at = now(), updated_at = now()
+          where id = $1
+        `,
+        [meetingId]
+      );
+      return { meetingId, deleted: true };
+    });
   }
 
   async eligiblePlaces(meetingId: string, userId: string) {
@@ -1827,13 +2903,18 @@ export class PostgresStore {
     if (uniqueIds.length > 2) {
       throw new StoreError(422, "CANDIDATE_LIMIT_EXCEEDED", "후보는 최대 2개까지 선택할 수 있습니다.");
     }
-    const client = await this.pool.connect();
-    try {
-      await client.query("begin");
-      await client.query(
-        "select pg_advisory_xact_lock(hashtext($1))",
-        [`candidate:${meetingId}`]
-      );
+    // Place locks are acquired before the meeting lock (see `withLocks`) so
+    // that a concurrent `unregisterUserPlace(userPlaceId)` for one of these
+    // places can never interleave with this transaction: whichever of the
+    // two acquires the place lock first fully completes before the other
+    // proceeds, so the `is_active = true` check below always reflects the
+    // real, final state.
+    await this.withLocks([...this.placeLockKeys(uniqueIds), `meeting:${meetingId}`], async (client) => {
+      // replaceMyCandidates acquires its meeting lock via `withLocks`
+      // directly (to get place-locks-first ordering), bypassing
+      // `withMeetingLock` — so unlike every other meeting-locked method, it
+      // has to run this itself.
+      await this.autoCompletePastDueMeeting(client, meetingId);
       const context = await client.query<{
         status: MeetingStatus;
         memberId: string;
@@ -1934,18 +3015,103 @@ export class PostgresStore {
       await client.query("update meetings set updated_at = now() where id = $1", [
         meetingId
       ]);
-      await client.query("commit");
-    } catch (error) {
-      await client.query("rollback");
-      throw error;
-    } finally {
-      client.release();
-    }
+    });
     return this.publicCandidates(meetingId, userId);
   }
 
   async createVote(meetingId: string, userId: string) {
-    return this.write((store) => store.createVote(meetingId, userId));
+    const voteId = await this.withMeetingLock(meetingId, async (client) => {
+      const meetingResult = await client.query<{
+        status: MeetingStatus;
+        hostUserId: string;
+      }>(
+        `
+          select status, host_user_id as "hostUserId"
+          from meetings
+          where id = $1 and status <> 'DELETED'
+        `,
+        [meetingId]
+      );
+      const meeting = meetingResult.rows[0];
+      if (!meeting) {
+        throw new StoreError(404, "MEETING_NOT_FOUND", "모임을 찾을 수 없습니다.");
+      }
+      if (meeting.hostUserId !== userId) {
+        throw new StoreError(403, "HOST_ONLY", "모임장만 실행할 수 있습니다.");
+      }
+      if (meeting.status !== "RECRUITING") {
+        throw new StoreError(409, "VOTE_ALREADY_CREATED", "이미 투표가 생성됐습니다.");
+      }
+
+      const candidateResult = await client.query<{ id: string }>(
+        `
+          select distinct candidate.id
+          from meeting_candidates candidate
+          join candidate_recommendations recommendation
+            on recommendation.candidate_id = candidate.id
+          where candidate.meeting_id = $1
+          order by candidate.id
+        `,
+        [meetingId]
+      );
+      const candidateIds = candidateResult.rows.map((row) => row.id);
+      if (candidateIds.length < 2) {
+        throw new StoreError(422, "NOT_ENOUGH_CANDIDATES", "투표 후보가 2개 이상 필요합니다.");
+      }
+
+      await client.query(
+        `update meeting_candidates set is_frozen = true where id = any($1::text[])`,
+        [candidateIds]
+      );
+
+      const newVoteId = randomUUID();
+      await client.query(
+        `insert into votes (id, meeting_id, status) values ($1, $2, 'OPEN')`,
+        [newVoteId, meetingId]
+      );
+
+      const memberResult = await client.query<{ id: string; userId: string }>(
+        `
+          select id, user_id as "userId"
+          from meeting_members
+          where meeting_id = $1 and status = 'ACTIVE'
+          order by case when role = 'HOST' then 0 else 1 end, joined_at
+        `,
+        [meetingId]
+      );
+
+      for (const [index, member] of memberResult.rows.entries()) {
+        const offset = index % candidateIds.length;
+        const rotated = [...candidateIds.slice(offset), ...candidateIds.slice(0, offset)];
+        await client.query(
+          `
+            insert into vote_sessions (
+              id, vote_id, meeting_id, member_id, user_id, status,
+              total_rounds, completed_rounds, candidate_order
+            )
+            values ($1, $2, $3, $4, $5, 'NOT_STARTED', $6, 0, $7::text[])
+          `,
+          [
+            randomUUID(),
+            newVoteId,
+            meetingId,
+            member.id,
+            member.userId,
+            candidateIds.length - 1,
+            rotated
+          ]
+        );
+      }
+
+      await client.query(
+        `update meetings set status = 'VOTING', updated_at = now() where id = $1`,
+        [meetingId]
+      );
+
+      return newVoteId;
+    });
+
+    return { meeting: await this.detail(meetingId, userId), voteId };
   }
 
   async voteSession(meetingId: string, userId: string) {
@@ -1963,12 +3129,7 @@ export class PostgresStore {
     roundNumber: number,
     selectedCandidateId: string
   ) {
-    const client = await this.pool.connect();
-    try {
-      await client.query("begin");
-      await client.query(
-        "select pg_advisory_xact_lock(hashtext('damo-store-write'))"
-      );
+    await this.withMeetingLock(meetingId, async (client) => {
       const meetingResult = await client.query<{ status: MeetingStatus }>(
         `
           select status
@@ -2092,33 +3253,193 @@ export class PostgresStore {
           [meetingId]
         );
       }
+    });
+    return this.voteSession(meetingId, userId);
+  }
+
+  async voteResults(meetingId: string, userId: string) {
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin transaction isolation level repeatable read read only");
+      const result = await this.computeVoteResults(client, meetingId, userId);
       await client.query("commit");
+      return result;
     } catch (error) {
       await client.query("rollback");
       throw error;
     } finally {
       client.release();
     }
-    return this.voteSession(meetingId, userId);
-  }
-
-  async voteResults(meetingId: string, userId: string) {
-    return this.read((store) => store.voteResults(meetingId, userId));
   }
 
   async closeVote(meetingId: string, userId: string, force: boolean) {
-    return this.write((store) =>
-      store.closeVote(meetingId, userId, force)
-    );
+    return this.withMeetingLock(meetingId, async (client) => {
+      const meetingResult = await client.query<{
+        status: MeetingStatus;
+        hostUserId: string;
+        name: string;
+        capacity: number;
+        meetingAt: Date | string;
+        purpose: Purpose;
+        mood: Mood;
+        joinCode: string;
+        seriesId: string | null;
+        recurrenceType: RecurrenceType | null;
+        recurrenceNextAt: Date | string | null;
+        nextMeetingId: string | null;
+      }>(
+        `
+          select
+            status, host_user_id as "hostUserId", name, capacity,
+            meeting_at as "meetingAt", purpose, mood, join_code as "joinCode",
+            series_id as "seriesId", recurrence_type as "recurrenceType",
+            recurrence_next_at as "recurrenceNextAt", next_meeting_id as "nextMeetingId"
+          from meetings
+          where id = $1 and status <> 'DELETED'
+          for update
+        `,
+        [meetingId]
+      );
+      const meeting = meetingResult.rows[0];
+      if (!meeting) {
+        throw new StoreError(404, "MEETING_NOT_FOUND", "모임을 찾을 수 없습니다.");
+      }
+      if (meeting.hostUserId !== userId) {
+        throw new StoreError(403, "HOST_ONLY", "모임장만 실행할 수 있습니다.");
+      }
+      if (meeting.status !== "VOTING") {
+        throw new StoreError(409, "VOTE_NOT_OPEN", "종료할 수 있는 투표가 없습니다.");
+      }
+
+      const results = await this.computeVoteResults(client, meetingId, userId);
+      if (results.incompleteMembers > 0 && !force) {
+        throw new StoreError(
+          409,
+          "VOTE_HAS_INCOMPLETE_MEMBERS",
+          "아직 투표를 완료하지 않은 인원이 있습니다.",
+          { incompleteMembers: results.incompleteMembers }
+        );
+      }
+
+      const isSingleWinner = results.tiedFirstCandidateIds.length === 1;
+      const voteStatus: "CLOSED" | "FINAL_SELECTION" = isSingleWinner
+        ? "CLOSED"
+        : "FINAL_SELECTION";
+      const meetingStatus: "COMPLETED" | "FINAL_SELECTION" = isSingleWinner
+        ? "COMPLETED"
+        : "FINAL_SELECTION";
+      const finalCandidateId = isSingleWinner ? results.tiedFirstCandidateIds[0]! : null;
+
+      await client.query(
+        `update votes set status = $2, closed_at = now() where meeting_id = $1`,
+        [meetingId, voteStatus]
+      );
+      await client.query(
+        `
+          update meetings
+          set status = $2, final_candidate_id = coalesce($3, final_candidate_id), updated_at = now()
+          where id = $1
+        `,
+        [meetingId, meetingStatus, finalCandidateId]
+      );
+
+      if (isSingleWinner) {
+        await this.createNextRecurringOccurrence(client, {
+          id: meetingId,
+          name: meeting.name,
+          hostUserId: meeting.hostUserId,
+          capacity: meeting.capacity,
+          meetingAt: timestamp(meeting.meetingAt),
+          purpose: meeting.purpose,
+          mood: meeting.mood,
+          joinCode: meeting.joinCode,
+          seriesId: meeting.seriesId,
+          recurrenceType: meeting.recurrenceType,
+          recurrenceNextAt: nullableTimestamp(meeting.recurrenceNextAt),
+          nextMeetingId: meeting.nextMeetingId
+        });
+      }
+
+      return this.computeVoteResults(client, meetingId, userId);
+    });
   }
 
-  async finalSelection(
-    meetingId: string,
-    userId: string,
-    candidateId: string
-  ) {
-    return this.write((store) =>
-      store.finalSelection(meetingId, userId, candidateId)
-    );
+  async finalSelection(meetingId: string, userId: string, candidateId: string) {
+    return this.withMeetingLock(meetingId, async (client) => {
+      const meetingResult = await client.query<{
+        status: MeetingStatus;
+        hostUserId: string;
+        name: string;
+        capacity: number;
+        meetingAt: Date | string;
+        purpose: Purpose;
+        mood: Mood;
+        joinCode: string;
+        seriesId: string | null;
+        recurrenceType: RecurrenceType | null;
+        recurrenceNextAt: Date | string | null;
+        nextMeetingId: string | null;
+      }>(
+        `
+          select
+            status, host_user_id as "hostUserId", name, capacity,
+            meeting_at as "meetingAt", purpose, mood, join_code as "joinCode",
+            series_id as "seriesId", recurrence_type as "recurrenceType",
+            recurrence_next_at as "recurrenceNextAt", next_meeting_id as "nextMeetingId"
+          from meetings
+          where id = $1 and status <> 'DELETED'
+          for update
+        `,
+        [meetingId]
+      );
+      const meeting = meetingResult.rows[0];
+      if (!meeting) {
+        throw new StoreError(404, "MEETING_NOT_FOUND", "모임을 찾을 수 없습니다.");
+      }
+      if (meeting.hostUserId !== userId) {
+        throw new StoreError(403, "HOST_ONLY", "모임장만 실행할 수 있습니다.");
+      }
+      if (meeting.status !== "FINAL_SELECTION") {
+        throw new StoreError(
+          409,
+          "FINAL_SELECTION_NOT_REQUIRED",
+          "최종 선택이 필요한 상태가 아닙니다."
+        );
+      }
+
+      const results = await this.computeVoteResults(client, meetingId, userId);
+      if (!results.tiedFirstCandidateIds.includes(candidateId)) {
+        throw new StoreError(422, "INVALID_FINAL_CANDIDATE", "공동 1위 후보 중에서 선택해야 합니다.");
+      }
+
+      await client.query(
+        `
+          update meetings
+          set status = 'COMPLETED', final_candidate_id = $2, updated_at = now()
+          where id = $1
+        `,
+        [meetingId, candidateId]
+      );
+      await client.query(`update votes set status = 'CLOSED' where meeting_id = $1`, [
+        meetingId
+      ]);
+
+      await this.createNextRecurringOccurrence(client, {
+        id: meetingId,
+        name: meeting.name,
+        hostUserId: meeting.hostUserId,
+        capacity: meeting.capacity,
+        meetingAt: timestamp(meeting.meetingAt),
+        purpose: meeting.purpose,
+        mood: meeting.mood,
+        joinCode: meeting.joinCode,
+        seriesId: meeting.seriesId,
+        recurrenceType: meeting.recurrenceType,
+        recurrenceNextAt: nullableTimestamp(meeting.recurrenceNextAt),
+        nextMeetingId: meeting.nextMeetingId
+      });
+
+      return this.computeVoteResults(client, meetingId, userId);
+    });
   }
 }

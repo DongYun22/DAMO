@@ -4043,7 +4043,7 @@ select:focus-visible {
 }
 
 .home-actions .home-actions__create {
-  color: #98b300;
+  color: #fffdf5;
 }
 
 .home-actions .home-actions__join {
@@ -4055,4 +4055,64 @@ select:focus-visible {
 
 .home-actions .home-actions__join:hover {
   background: #869f00;
+}
+
+/* Meeting home UI updates */
+
+.home-actions {
+  background: rgba(255, 253, 245, 0.76);
+}
+
+a.button.button--secondary {
+  border-color: #98b300;
+  color: #fffdf5;
+  background: #98b300;
+}
+
+a.button.button--secondary:hover {
+  border-color: #869f00;
+  background: #869f00;
+}
+
+.winner-card {
+  color: #98b300;
+}
+
+.winner-card > span,
+.winner-card h2,
+.winner-card p,
+.winner-card > strong {
+  color: #98b300;
+}
+
+.page--detail .candidate-list .place-meta span,
+.page--detail .member-row > div > span {
+  color: #98b300;
+}
+
+.invite-code {
+  background: rgba(152, 179, 0, 0.14);
+}
+
+.meeting-hero__tags span {
+  color: #364c84;
+  background: #98b300;
+  font-weight: 800;
+}
+
+.member-toggle {
+  display: block;
+  width: 100%;
+  margin: 10px 0 0;
+  padding: 4px 8px;
+  border: 0;
+  color: #364c84;
+  background: transparent;
+  font-size: 13px;
+  font-weight: 750;
+  text-align: center;
+}
+
+.member-toggle:hover {
+  color: #2b3d73;
 }

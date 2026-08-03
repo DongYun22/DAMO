@@ -349,10 +349,16 @@ export function HomePage() {
       </section>
 
       <div className="home-actions">
-        <Link to="/meetings/new" className="button button--primary">
+        <Link
+          to="/meetings/new"
+          className="button button--primary home-actions__create"
+        >
           <Plus size={18} /> 모임 만들기
         </Link>
-        <Link to="/meetings/join" className="button button--secondary">
+        <Link
+          to="/meetings/join"
+          className="button button--secondary home-actions__join"
+        >
           <DoorOpen size={18} /> 모임 가입
         </Link>
       </div>
@@ -2575,11 +2581,21 @@ export function ResultsPage() {
       ) : (
         <section className="result-status-card">
           <div className="result-status-card__ring">
-            <strong>{results.completedMembers}</strong>
-            <span>/{results.totalMembers}</span>
+            <strong className="result-status-card__completed">
+              {results.completedMembers}
+            </strong>
+            <span className="result-status-card__capacity">
+              /
+              <strong>{results.totalMembers}</strong>
+              <small>명</small>
+            </span>
           </div>
           <div>
-            <span className="eyebrow">
+            <span
+              className={`eyebrow ${
+                results.voteStatus === "OPEN" ? "eyebrow--live" : ""
+              }`}
+            >
               {results.voteStatus === "OPEN" ? "실시간 참여 현황" : "집계 완료"}
             </span>
             <h2>

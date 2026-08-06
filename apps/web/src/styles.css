@@ -773,6 +773,7 @@ select {
   background: var(--accent-soft);
   font-size: 13px;
   line-height: 1.4;
+  white-space: pre-line;
 }
 
 .toast {

@@ -59,7 +59,7 @@ import {
   useParams,
   useSearchParams
 } from "react-router-dom";
-import { ApiError, API_URL, api } from "./api";
+import { ApiError, api } from "./api";
 import { useAuth } from "./auth";
 import {
   CandidateRow,
@@ -148,9 +148,10 @@ export function LoginPage() {
     }
   };
 
-  const oauth = (provider: "kakao") => {
-    const redirectUri = `${window.location.origin}/oauth/callback`;
-    window.location.href = `${API_URL}/auth/oauth/${provider}?redirectUri=${encodeURIComponent(redirectUri)}`;
+  // 카카오 실연동 전까지는 mock 리다이렉트로 넘어가지 않도록 막아둔다 —
+  // 안 그러면 버튼을 누르는 즉시 "가은" 테스트 계정으로 로그인돼 버린다.
+  const oauth = (_provider: "kakao") => {
+    setError("카카오 로그인 서비스 준비중입니다.\n즉시 가입으로 이용 부탁드립니다.");
   };
 
   return (
